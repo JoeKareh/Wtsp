@@ -1,0 +1,16 @@
+{
+  "name": "bizcontrol",
+  "version": "1.0.0",
+  "description": "Order management, CRM, finance tracking, inventory, WhatsApp marketing and sales intelligence",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec tests/*.test.js",
+    "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
+    "start:demo": "DB_PATH=data/demo.sqlite node --disable-warning=ExperimentalWarning server/index.js",
+    "backup": "node --disable-warning=ExperimentalWarning scripts/backup.js",
+    "restore": "node --disable-warning=ExperimentalWarning scripts/restore.js"
+  }
+}
