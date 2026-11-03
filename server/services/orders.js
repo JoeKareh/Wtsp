@@ -6,6 +6,7 @@ import { createCustomer, refreshCustomerStatus, getCustomer } from './customers.
 import { applyMovement } from './inventory.js';
 import { checkStock, notify, avgAmountBase } from './notifications.js';
 import { emit } from '../events.js';
+import { enforce, bump } from '../limits.js';
 
 export const STATUSES = ['Draft', 'Pending', 'Confirmed', 'Processing', 'Ready', 'Out for delivery', 'Delivered', 'Completed', 'Cancelled', 'Returned'];
 export const OPEN = ['Pending', 'Confirmed', 'Processing', 'Ready', 'Out for delivery'];
@@ -143,6 +144,7 @@ export function createOrder(b, user) {
     const customer = resolveCustomer(b, user);
     const status = oneOf(b.status, 'Status', STATUSES, { def: 'Pending' });
     if (status === 'Cancelled' || status === 'Returned') throw bad('A new order cannot start as Cancelled or Returned');
+    if (status !== 'Draft') enforce('orders');
     const f = fields(b, null, user);
     const fx = fxRate(f.currency, f.order_date);
     const items = buildItems(b.items, f.currency, fx, f.order_date, user);
@@ -156,7 +158,7 @@ export function createOrder(b, user) {
     refreshCustomerStatus(customer.id);
     audit(user, 'create', 'order', id, null, { number, customer: customer.code, status, ...f });
     const o = getOrder(id);
-    if (status !== 'Draft') afterCreate(o);
+    if (status !== 'Draft') { bump('orders'); afterCreate(o); }
     return o;
   });
 }
@@ -201,6 +203,7 @@ export function setStatus(id, status, { note, reason, delivery_date } = {}, user
   return tx(() => {
     const cur = get('SELECT * FROM orders WHERE id=?', id); if (!cur) throw notFound('Order');
     if (cur.status === status) return getOrder(id);
+    if (cur.status === 'Draft' && status !== 'Cancelled') enforce('orders');
     const today = todayStr(allSettings().timezone);
     let del = cur.delivery_date;
     if (status === 'Delivered' || status === 'Completed') del = date(delivery_date, 'Delivery date') || cur.delivery_date || today;
@@ -210,7 +213,7 @@ export function setStatus(id, status, { note, reason, delivery_date } = {}, user
     syncOrderStock(id, user, `status ${status}`);
     refreshCustomerStatus(cur.customer_id);
     audit(user, 'status', 'order', id, { status: cur.status }, { status }, note || reason);
-    if (cur.status === 'Draft' && status !== 'Cancelled') afterCreate(getOrder(id));
+    if (cur.status === 'Draft' && status !== 'Cancelled') { bump('orders'); afterCreate(getOrder(id)); }
     return getOrder(id);
   });
 }

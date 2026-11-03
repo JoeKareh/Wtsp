@@ -23,6 +23,7 @@ export const NOTIFICATION_TYPES = {
   unusual_transaction: { label: 'Unusual financial transaction', severity: 'warning' },
   customer_inactive: { label: 'Customer became inactive', severity: 'info' },
   campaign_completed: { label: 'Campaign completed', severity: 'success' },
+  usage_limit: { label: 'Plan limit warning', severity: 'warning' },
 };
 export function getRule(type) {
   return { ...D, ...(setting('notification_rules')?.[type] || {}) };

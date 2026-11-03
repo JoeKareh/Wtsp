@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { GET, POST, PUT, DELETE, setSessionResolver, parseCookies, isHttps, reply } from './http.js';
 import { all, get, run, tx, audit, allSettings, setSettings, tenantKey, currentTenantContext } from './db.js';
 import { workspaceInfo } from './lifecycle.js';
+import { enforce } from './limits.js';
 import { HttpError, bad, notFound, str, email as vEmail, nowIso, sha256, safeJson } from './util.js';
 import { DEFAULT_ROLES, ALL_PERMS, PERMISSIONS, hasPerm } from './perms.js';
 import { queueEmail, flushOutbox } from './mail.js';
@@ -209,6 +210,7 @@ function userInput(b, { creating }) {
   return { email: vEmail(b.email, 'Email', { required: creating }), name: str(b.name, 'Name', { required: creating, max: 100 }), role, perms };
 }
 POST('/api/users', UM, (ctx) => {
+  enforce('users');
   const { email, name, role, perms } = userInput(ctx.body, { creating: true });
   checkPassword(ctx.body.password);
   if (get('SELECT id FROM users WHERE email=?', email)) throw new HttpError(409, 'A user with this email already exists');

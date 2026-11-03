@@ -206,7 +206,7 @@ async function process_(req, res, h, rid) {
     if (status >= 500) { log.error(req.method, pathname, e.stack || e); try { noteError(h.tenantId || 'platform', e.message); } catch { /* ignore */ } }
     let msg = e.message;
     if (status === 409 && !e.status) msg = 'A record with the same unique value already exists';
-    if (status >= 500 && !e.tenantUnavailable) msg = 'Internal server error';
+    if (status >= 500 && !(e instanceof HttpError) && !e.tenantUnavailable) msg = 'Internal server error';   // unexpected errors are masked; deliberate HttpErrors (e.g. 501/502/503 with a helpful message) are shown
     sendJson(res, status, { error: msg, details: e.details }, ctx.setCookies.length ? { 'Set-Cookie': ctx.setCookies } : {});
   } finally {
     const ms = Date.now() - started; metrics.requests++; metrics.sumMs += ms;

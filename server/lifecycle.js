@@ -18,7 +18,8 @@ export function effectiveStatus(t, now = Date.now()) {
   let st = t.status;
   if (st === 'trialing' && t.trial_ends_at && Date.parse(t.trial_ends_at) < now) st = 'suspended';
   if (st === 'active' && t.paid_through && Date.parse(t.paid_through + 'T23:59:59Z') < now) {
-    st = Date.parse(addD(t.paid_through + 'T23:59:59Z', GRACE_DAYS)) < now ? 'suspended' : 'past_due';
+    if (safeJson(t.flags, {}).cancel_at_period_end) st = 'canceled';                      // they asked to cancel: paid time ended, no grace period
+    else st = Date.parse(addD(t.paid_through + 'T23:59:59Z', GRACE_DAYS)) < now ? 'suspended' : 'past_due';
   }
   if (st === 'past_due' && t.grace_ends_at && Date.parse(t.grace_ends_at) < now) st = 'suspended';
   return st;
@@ -69,7 +70,8 @@ export function runLifecycle(now = new Date()) {
         const left = Math.ceil((Date.parse(t.paid_through + 'T23:59:59Z') - n) / 864e5);
         const manual = cGet("SELECT 1 x FROM subscriptions WHERE tenant_id=? AND provider='paddle' AND status IN ('active','trialing','past_due')", t.id) ? false : true;
         if (manual) for (const [key, at] of [['renew7', 7], ['renew1', 1]]) if (left <= at && left >= 0 && !marked(t, key + t.paid_through)) { mark(t, key + t.paid_through); mail('renewal_reminder', t, { left, date: t.paid_through }); out.emails++; }
-        if (Date.parse(t.paid_through + 'T23:59:59Z') < n) { const grace = addD(t.paid_through + 'T23:59:59Z', GRACE_DAYS); setTenantStatus(t.id, 'past_due', { grace_ends_at: grace }, 'system', 'paid-through date passed'); mail('payment_failed', t, { date: day(grace) }); out.past_due++; }
+        if (Date.parse(t.paid_through + 'T23:59:59Z') < n && flags.cancel_at_period_end) { setTenantStatus(t.id, 'canceled', { canceled_at: nowIso(), delete_after: addD(nowIso(), DELETE_AFTER_DAYS) }, 'system', 'canceled at period end'); out.canceled = (out.canceled || 0) + 1; }
+        else if (Date.parse(t.paid_through + 'T23:59:59Z') < n) { const grace = addD(t.paid_through + 'T23:59:59Z', GRACE_DAYS); setTenantStatus(t.id, 'past_due', { grace_ends_at: grace }, 'system', 'paid-through date passed'); mail('payment_failed', t, { date: day(grace) }); out.past_due++; }
       } else if (t.status === 'past_due' && t.grace_ends_at && Date.parse(t.grace_ends_at) < n) {
         setTenantStatus(t.id, 'suspended', { suspended_reason: 'payment_overdue' }, 'system', 'grace period ended'); mail('suspended', t, { reason: 'payment overdue' }); out.suspended++;
       } else if (t.status === 'canceled' && t.delete_after) {

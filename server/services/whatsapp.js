@@ -9,6 +9,7 @@ import { safeEqual } from '../crypto.js';
 import { cGet, cRun } from '../control.js';
 import { currentTenantContext, withTenant } from '../db.js';
 import { allow } from '../ratelimit.js';
+import { requireFeature, enforce, bump, remaining } from '../limits.js';
 import { alertOperator } from '../platformmail.js';
 import { customerSelect, recordConsent, getCustomer, createCustomer } from './customers.js';
 import { notify, setOwnerWhatsAppSender } from './notifications.js';
@@ -219,13 +220,14 @@ async function sendOne({ customer_id, template_id, params = {}, order_id = null 
   const tpl = getTemplate(template_id); if (!tpl) throw notFound('Template');
   if (!waStatus().can_send) throw bad('WhatsApp is not configured on this server');
   if (!tpl.usable) throw bad(`Template "${tpl.name}" is not approved by WhatsApp yet (status: ${tpl.meta_status})`);
+  if (tpl.category === 'MARKETING') { requireFeature('campaigns', 'Marketing messages'); enforce('wa_marketing'); }   // transactional (utility) messages are available on every plan
   const why = eligibility(c, tpl.category); if (why) throw bad(`Cannot message this customer: ${why.replaceAll('_', ' ')}`);
   const m = buildMessage(tpl, c, params, order_id);
   if (m.missing.length) throw bad(`Missing values for: ${m.missing.map((x) => '{' + x + '}').join(', ')}`);
   const id = run("INSERT INTO whatsapp_messages(customer_id,phone,direction,kind,template_id,body,status,created_at) VALUES (?,?,'out','template',?,?,'queued',?)", c.id, c.whatsapp, tpl.id, m.text, nowIso()).lastInsertRowid;
   try {
     const wamid = await sendTemplateMessage(c.whatsapp, tpl, m.values);
-    run("UPDATE whatsapp_messages SET status='sent', wamid=?, sent_at=? WHERE id=?", wamid, nowIso(), id);
+    run("UPDATE whatsapp_messages SET status='sent', wamid=?, sent_at=? WHERE id=?", wamid, nowIso(), id); if (tpl.category === 'MARKETING') bump('wa_marketing');
   } catch (e) { run("UPDATE whatsapp_messages SET status='failed', error=? WHERE id=?", e.message.slice(0, 300), id); throw e; }
   audit(user, 'send_template', 'whatsapp', c.id, null, { template: tpl.name });
   return get('SELECT * FROM whatsapp_messages WHERE id=?', id);
@@ -282,11 +284,12 @@ export async function processCampaigns() {
         // consent is re-verified immediately before every send: opt-outs received mid-campaign are honoured
         const cust = all(`SELECT * FROM (${customerSelect()}) WHERE id=?`, m.customer_id)[0];
         const why = cust ? eligibility(cust, tpl.category) : 'customer_deleted';
+        if (!why && tpl.category === 'MARKETING' && remaining('wa_marketing') <= 0) { run("UPDATE whatsapp_messages SET status='skipped', error='plan_limit' WHERE id=?", m.id); continue; }   // monthly marketing allowance of the plan is used up
         if (why) { run("UPDATE whatsapp_messages SET status='skipped', error=? WHERE id=?", why, m.id); continue; }
         try {
           const vals = buildMessage(tpl, cust, safeJson(c.params, {})).values;
           const wamid = await sendTemplateMessage(m.phone, tpl, vals);
-          run("UPDATE whatsapp_messages SET status='sent', wamid=?, sent_at=? WHERE id=?", wamid, nowIso(), m.id);
+          run("UPDATE whatsapp_messages SET status='sent', wamid=?, sent_at=? WHERE id=?", wamid, nowIso(), m.id); if (tpl.category === 'MARKETING') bump('wa_marketing');
         } catch (e) {
           run("UPDATE whatsapp_messages SET status='failed', error=? WHERE id=?", String(e.message).slice(0, 300), m.id);
           if (e.waCode === 190 || /access token/i.test(e.message)) { run("UPDATE whatsapp_campaigns SET status='failed', error=? WHERE id=?", e.message, c.id); break; }
@@ -525,6 +528,7 @@ POST('/api/whatsapp/segments/preview', R, (ctx) => {
   return { name: seg.name, targeted: seg.targeted, eligible: seg.eligible.length, excluded: seg.excluded, sample: seg.eligible.slice(0, 20).map((c) => ({ id: c.id, name: c.name, whatsapp: c.whatsapp, last_purchase: c.last_purchase, total_spent: c.total_spent })) };
 });
 POST('/api/whatsapp/segments', W, (ctx) => {
+  requireFeature('campaigns', 'WhatsApp campaigns and segments');
   const name = str(ctx.body.name, 'Name', { required: true, max: 80 });
   if (get('SELECT 1 x FROM saved_segments WHERE name=?', name)) throw conflict('A saved segment with this name exists');
   const id = run('INSERT INTO saved_segments(name,rules,created_at) VALUES (?,?,?)', name, JSON.stringify(ctx.body.rules || {}), nowIso()).lastInsertRowid; return { id };
@@ -543,11 +547,13 @@ GET('/api/whatsapp/campaigns/:id', R, (ctx) => {
   return { ...shapeCampaign(c), messages: all(`SELECT m.id, m.status, m.error, m.sent_at, m.delivered_at, m.read_at, m.body, m.phone, cu.name AS customer_name FROM whatsapp_messages m LEFT JOIN customers cu ON cu.id=m.customer_id WHERE m.campaign_id=? AND m.direction='out' ORDER BY m.id LIMIT ? OFFSET ?`, c.id, limit, offset) };
 });
 POST('/api/whatsapp/campaigns', W, (ctx) => {
+  requireFeature('campaigns', 'WhatsApp campaigns and segments');
   const v = campaignInput(ctx.body);
   const id = run("INSERT INTO whatsapp_campaigns(name,segment,template_id,params,status,created_by,created_at) VALUES (?,?,?,?,'draft',?,?)", v.name, JSON.stringify(ctx.body.segment), v.tpl.id, JSON.stringify(v.params), ctx.user.id, nowIso()).lastInsertRowid;
   audit(ctx.user, 'create', 'campaign', id, null, { name: v.name }); return shapeCampaign(get('SELECT * FROM whatsapp_campaigns WHERE id=?', id));
 });
 PUT('/api/whatsapp/campaigns/:id', W, (ctx) => {
+  requireFeature('campaigns', 'WhatsApp campaigns and segments');
   const c = get('SELECT * FROM whatsapp_campaigns WHERE id=?', ctx.params.id); if (!c) throw notFound('Campaign');
   if (!['draft', 'scheduled'].includes(c.status)) throw bad('Only draft or scheduled campaigns can be edited');
   const v = campaignInput(ctx.body);
@@ -569,6 +575,7 @@ POST('/api/whatsapp/campaigns/:id/preview', R, (ctx) => {
   };
 });
 POST('/api/whatsapp/campaigns/:id/send', W, (ctx) => {
+  requireFeature('campaigns', 'WhatsApp campaigns and segments');
   const c = get('SELECT * FROM whatsapp_campaigns WHERE id=?', ctx.params.id); if (!c) throw notFound('Campaign');
   if (!['draft', 'scheduled'].includes(c.status)) throw bad(`Campaign is already ${c.status}`);
   const tpl = getTemplate(c.template_id);

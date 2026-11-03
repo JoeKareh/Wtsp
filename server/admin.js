@@ -10,6 +10,7 @@ import { hashPassword, verifyPassword, createSession, checkPassword } from './au
 import * as totp from './totp.js';
 import { setTenantStatus, purgeTenant, effectiveStatus, purgeDays, addD, DELETE_AFTER_DAYS } from './lifecycle.js';
 import { allow } from './ratelimit.js';
+import { manual } from './billing/manual.js';
 import { HttpError, bad, nowIso, safeJson, notFound, str, oneOf, int } from './util.js';
 
 const A = (extra = {}) => ({ perm: 'admin', scope: 'admin', ...extra });
@@ -104,6 +105,12 @@ PUT('/api/admin/accounts/:id/route', A(), (ctx) => { const r = oneOf(ctx.body.bi
 DELETE('/api/admin/tenants/:id', A(), (ctx) => { const t = need(ctx); setTenantStatus(t.id, 'deleted', { purge_after: addD(nowIso(), purgeDays()) }, ctx.admin.email, 'soft delete'); return { ok: true, purge_after: tenantRow(t.id).purge_after }; });
 POST('/api/admin/tenants/:id/restore', A(), (ctx) => { const t = need(ctx); if (t.status !== 'deleted') throw bad('Not deleted'); setTenantStatus(t.id, 'suspended', { purge_after: null, suspended_reason: 'restored' }, ctx.admin.email, 'restored'); return shapeTenant(tenantRow(t.id)); });
 POST('/api/admin/tenants/:id/purge', A(), (ctx) => { const t = need(ctx); if (ctx.body.confirm !== t.subdomain) throw bad('Type the workspace address to confirm'); if (t.status !== 'deleted') throw bad('Soft-delete the workspace first'); purgeTenant(t.id, ctx.admin.email); return { ok: true }; });
+
+// ---------- manual billing (bank transfer / Whish / OMT / cash) ----------
+POST('/api/admin/tenants/:id/manual-payment', A(), (ctx) => { need(ctx); return manual.recordPayment(ctx.params.id, ctx.body, ctx.admin.email); });
+GET('/api/admin/invoices', A(), (ctx) => ({ rows: cAll(`SELECT i.*, t.subdomain FROM invoices i JOIN tenants t ON t.id=i.tenant_id ${ctx.query.tenant ? 'WHERE i.tenant_id=?' : ''} ORDER BY i.id DESC LIMIT 200`, ...(ctx.query.tenant ? [ctx.query.tenant] : [])) }));
+GET('/api/admin/invoices/:number/pdf', A(), async (ctx) => { const inv = cGet('SELECT * FROM invoices WHERE number=?', ctx.params.number); if (!inv) throw notFound('Invoice'); return raw((await import('./billing/core.js')).renderInvoicePdf(inv), 'application/pdf', `${inv.number}.pdf`); });
+GET('/api/admin/payment-events', A(), () => ({ rows: cAll('SELECT id,provider,event_id,type,occurred_at,received_at,status,error FROM payment_events ORDER BY id DESC LIMIT 200') }));
 
 // ---------- support sessions (impersonation) ----------
 // Never assumes the owner's identity silently: a separate, short-lived, flagged session, read-only unless explicitly allowed.

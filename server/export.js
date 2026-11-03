@@ -83,58 +83,36 @@ export function toXlsx(rep) {
   ]);
 }
 
-// ---------------- PDF ----------------
-const win = (s) => String(s ?? '').replace(/[^\x20-\x7e\xa0-\xff]/g, '?').replace(/[\\()]/g, (c) => '\\' + c);
+// ---------------- PDF (embedded Unicode font: Latin + Arabic, shaped and right-to-left aware) ----------------
+import { PdfDoc } from './pdf.js';
+import { baseDirection } from './arabic.js';
 export function toPdf(rep) {
-  const W = 842; const H = 595; const M = 30; const FS = 8; const LH = 12;
-  const cw = (t) => FS * 0.52 * t; // approx. char width
-  const textCols = rep.columns.map((c) => Math.min(40, Math.max(c.label.length, ...rep.rows.slice(0, 100).map((r) => cell(c, r[c.key]).length), 6)));
-  const total = textCols.reduce((a, b) => a + b, 0);
-  const avail = W - 2 * M; const scale = Math.min(1, avail / (cw(total) + rep.columns.length * 8));
-  const widths = textCols.map((n) => cw(n) * scale + 8 * scale); // pt
+  const W = 841.89; const H = 595.28; const M = 30; const FS = 8; const LH = 13; const avail = W - 2 * M;
+  const doc = new PdfDoc({ size: [W, H], title: rep.title });
+  const cols = rep.columns; const sample = rep.rows.slice(0, 120);
+  const want = cols.map((c) => Math.min(190, Math.max(doc.measure(c.label, FS, true), ...sample.map((r) => doc.measure(cell(c, r[c.key]), FS)), 28)) + 10);
+  const total = want.reduce((a, b) => a + b, 0); const k = total > avail ? avail / total : 1; const widths = want.map((w) => w * k);
   const xs = []; let x = M; for (const w of widths) { xs.push(x); x += w; }
-  const fit = (s, w) => { const max = Math.max(1, Math.floor((w - 4) / (FS * 0.52))); s = String(s); return s.length > max ? s.slice(0, Math.max(1, max - 1)) + '.' : s; };
-  const pages = []; let ops = []; let y = H - M;
-  const text = (t, px, py, bold = false, size = FS) => ops.push(`BT /${bold ? 'F2' : 'F1'} ${size} Tf ${px.toFixed(1)} ${py.toFixed(1)} Td (${win(t)}) Tj ET`);
-  const newPage = () => { if (ops.length) pages.push(ops); ops = []; y = H - M; };
+  const rtl = baseDirection(rep.title + ' ' + (rep.rows[0] ? Object.values(rep.rows[0]).join(' ') : '')) === 'rtl' && cols.every((c) => !['money', 'int', 'pct', 'number'].includes(c.type) || true) && false;
+  let page; let y; let n = 0;
   const header = () => {
-    ops.push('0.12 0.23 0.37 rg'); ops.push(`${M} ${y - 3} ${avail} ${LH + 2} re f`); ops.push('1 1 1 rg');
-    rep.columns.forEach((c, i) => text(fit(c.label, widths[i]), xs[i] + 2, y, true));
-    ops.push('0 0 0 rg'); y -= LH + 4;
+    page.rect(M, y - 3, avail, LH + 3, { fill: '#1f3a5f' });
+    cols.forEach((c, i) => { const num = ['money', 'int', 'pct', 'number'].includes(c.type); const r = num || baseDirection(c.label) === 'rtl'; page.text(c.label, r ? xs[i] + widths[i] - 4 : xs[i] + 3, y, { size: FS, bold: true, color: '#ffffff', align: r ? 'right' : 'left', maxWidth: widths[i] - 7 }); });
+    y -= LH + 4;
   };
-  text(rep.title, M, y, true, 14); y -= 18; text(rep.subtitle, M, y, false, 9); y -= 16; header();
-  let n = 0;
+  const newPage = () => { page = doc.addPage(); y = H - M; };
+  newPage();
+  page.text(rep.title, rtl ? W - M : M, y - 8, { size: 15, bold: true, align: rtl ? 'right' : 'left' }); y -= 24;
+  page.text(rep.subtitle, M, y, { size: 8.5, color: '#555555', maxWidth: avail }); y -= 18; header();
   for (const row of rep.rows) {
-    if (y < M + 20) { newPage(); header(); }
-    if (n++ % 2) { ops.push('0.95 0.96 0.98 rg'); ops.push(`${M} ${y - 3} ${avail} ${LH} re f`); ops.push('0 0 0 rg'); }
-    rep.columns.forEach((c, i) => {
-      const v = cell(c, row[c.key]); const right = ['money', 'int', 'pct', 'number'].includes(c.type);
-      const t = fit(v, widths[i]); text(t, right ? xs[i] + widths[i] - 4 - t.length * FS * 0.52 : xs[i] + 2, y);
-    });
+    if (y < M + 24) { newPage(); header(); }
+    if (n++ % 2) page.rect(M, y - 3, avail, LH, { fill: '#f1f4f8' });
+    cols.forEach((c, i) => { const v = cell(c, row[c.key]); if (!v) return; const num = ['money', 'int', 'pct', 'number'].includes(c.type); const r = num || baseDirection(v) === 'rtl'; page.text(v, r ? xs[i] + widths[i] - 4 : xs[i] + 3, y, { size: FS, align: r ? 'right' : 'left', maxWidth: widths[i] - 7 }); });
     y -= LH;
   }
-  if (!rep.rows.length) { text('No data for the selected period.', M, y); y -= LH; }
-  if (rep.summary?.length) {
-    y -= 8; for (const s of rep.summary) { if (y < M + 20) { newPage(); } text(s.label, M, y, true); text(cell({ type: s.type }, s.value), M + 220, y); y -= LH; }
-  }
-  for (const nt of rep.notes || []) { if (y < M + 20) newPage(); text(nt, M, y - 4, false, 7); y -= 10; }
-  pages.push(ops);
-  const objs = []; // 1 catalog, 2 pages, 3 F1, 4 F2, then page/content pairs
-  const add = (s) => { objs.push(s); return objs.length; };
-  add('<< /Type /Catalog /Pages 2 0 R >>'); add('PLACEHOLDER'); add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>'); add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
-  const kids = [];
-  pages.forEach((p, i) => {
-    const foot = `BT /F1 7 Tf ${W - M - 60} 14 Td (Page ${i + 1} of ${pages.length}) Tj ET`;
-    const stream = [...p, foot].join('\n');
-    const cid = objs.length + 2;
-    const pid = add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${cid} 0 R >>`);
-    add(`<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`);
-    kids.push(`${pid} 0 R`);
-  });
-  objs[1] = `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${pages.length} >>`;
-  const out = [Buffer.from('%PDF-1.4\n')]; const offs = []; let pos = out[0].length;
-  objs.forEach((o, i) => { offs.push(pos); const b = Buffer.from(`${i + 1} 0 obj\n${o}\nendobj\n`, 'latin1'); out.push(b); pos += b.length; });
-  let xref = `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`; for (const o of offs) xref += String(o).padStart(10, '0') + ' 00000 n \n';
-  out.push(Buffer.from(`${xref}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${pos}\n%%EOF\n`));
-  return Buffer.concat(out);
+  if (!rep.rows.length) { page.text('No data for the selected period.', M, y, { size: FS }); y -= LH; }
+  if (rep.summary?.length) { y -= 8; for (const s of rep.summary) { if (y < M + 24) newPage(); page.text(s.label, M, y, { size: FS + 1, bold: true }); page.text(cell({ type: s.type }, s.value), M + 230, y, { size: FS + 1 }); y -= LH; } }
+  for (const nt of rep.notes || []) { if (y < M + 24) newPage(); page.text(nt, M, y - 4, { size: 7, color: '#555555', maxWidth: avail }); y -= 10; }
+  doc.pages.forEach((p, i) => p.text(`${i + 1} / ${doc.pages.length}`, W - M, 16, { size: 7, align: 'right', color: '#777777' }));
+  return doc.build();
 }
