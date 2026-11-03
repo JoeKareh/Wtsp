@@ -1,0 +1,47 @@
+# Production stack: BizControl + Caddy (automatic HTTPS, including wildcard certificates for every customer's subdomain).
+# 1) cp .env.example .env   and fill it in (see docs/LAUNCH_GUIDE.md)   2) docker compose up -d --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DB_PATH: /data/bizcontrol.sqlite
+      CONTROL_DB_PATH: /data/control.sqlite
+      TENANTS_DIR: /data/tenants
+      TRUST_PROXY: "true"
+      COOKIE_SECURE: "true"
+    volumes:
+      - appdata:/data
+    stop_grace_period: 30s
+    expose: ["3000"]
+  caddy:
+    build:
+      context: .
+      dockerfile: caddy.Dockerfile
+    restart: unless-stopped
+    depends_on: [app]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+  backup:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/bizcontrol.sqlite
+      CONTROL_DB_PATH: /data/control.sqlite
+      TENANTS_DIR: /data/tenants
+    volumes:
+      - appdata:/data:ro
+      - backups:/backups
+    # one encrypted backup of everything per day (plus upload to S3 if BACKUP_S3_* are set), then sleep
+    command: ["sh", "-c", "while true; do node --disable-warning=ExperimentalWarning scripts/backup-all.js --dir /backups || echo backup failed; sleep 86400; done"]
+volumes: { appdata: {}, caddy_data: {}, caddy_config: {}, backups: {} }

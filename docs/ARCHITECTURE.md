@@ -69,3 +69,53 @@ Pressure-testing found and fixed: a dashboard that took 2.3 s (32 s for 20 concu
 * Recommendations are rules over your data with transparent assumptions; their "expected benefit" is an **estimate**, labelled as such.
 * The notification "check" runs every 5 minutes; event alerts (new order, payment) are immediate.
 * Not included: barcode scanning, invoicing/PDF invoices with legal numbering, tax filing, accounting-package export, multi-warehouse, offline mode.
+
+
+---
+
+# Hosted service (multi-customer) – added architecture
+
+## Tenancy
+* **One SQLite database per workspace** (`data/tenants/<id>.sqlite`) plus one **control database** (`control.sqlite`: accounts, plans, subscriptions, invoices, passes, admin users, audit).
+* The workspace is chosen **only** from the `Host` header (`shop.yourdomain.com`), bound with `AsyncLocalStorage`. `X-Forwarded-Host`, headers, cookies and request bodies can never select a workspace. With no workspace bound, any database access **throws** (fail-closed).
+* An LRU pool keeps up to `TENANT_POOL_MAX` (default 200) databases open; migrations run lazily on first open (`npm run migrate:all` does them all); a failed migration disables only that workspace and emails you.
+* Background jobs run per workspace, fairly (rotating start, time budget, concurrency cap), and one workspace failing never stops the others.
+* **Isolation is a release blocker:** `tests/isolation.test.js` plants unique markers in each workspace and tries every read path and cross-host trick; mutation testing found (and we fixed) a real cache leak (dashboard cache key lacked the workspace).
+
+## One device per login
+Hosted workspaces keep **one active session per user** by default (`SESSION_LIMIT`, per-workspace override in admin). A new sign-in ends the older session. Support/demo sessions are exempt. This stops casual sharing of a login (including via an APK/WebView wrapper, since it is enforced on the server). It cannot stop someone handing over the password; the previous user is simply signed out.
+
+## Billing model
+Plans/limits/features are rows in the control database (editable in the admin console). Lifecycle: `trialing → active → past_due (7 days) → suspended (read-only) → canceled → deleted (soft, 60 days) → purged`; evaluated lazily on every request so a missed job tick can never keep a lapsed workspace open. Reading and exporting are **never** blocked. Free passes (admin or code) are just `active` with `paid_through` set and a `comp` flag; they never count as revenue.
+
+## Secrets and keys
+Per-workspace integration secrets (WhatsApp, SMTP) are AES-256-GCM encrypted with `APP_ENCRYPTION_KEY`; each ciphertext carries a key id. **Rotation:** generate a new key, move the old into `APP_ENCRYPTION_KEY_OLD`, restart; each secret is re-encrypted with the new key the next time it is saved (a bulk re-encrypt command is not written yet, so keep the old key until every workspace has saved its settings, or until you accept losing the old secrets and ask customers to re-enter them). Backups use their own key (`BACKUP_ENCRYPTION_KEY`).
+
+## Measured on this development machine (4 vCPU Xeon @ 2.8 GHz, sandbox; Node 22)
+`npm run loadtest` (200 workspaces, 40 concurrent users, mixed reads/writes across *all* workspaces, real HTTP, 20 s):
+
+| Pool size | Throughput | Read p50 / p95 / p99 | Write p50 / p95 / p99 | Memory |
+|---|---|---|---|---|
+| 300 (all workspaces stay open) | **305 req/s** | 114 / 207 / 323 ms | 119 / 212 / 668 ms | 334 MB |
+| 100 (heavy open/close churn) | 182 req/s | 201 / 319 / 708 ms | 204 / 304 / 522 ms | 254 MB |
+
+* 0 errors in either run. An empty workspace is ~364 KB on disk and costs roughly 0.6 MB of RAM when open.
+* Node is single-threaded: this is roughly "one busy CPU core". Treat ~300 req/s as the ceiling of **one process**; a small business generates a few requests per minute, so this is thousands of ordinary customers in theory. **That is an extrapolation, not a measurement of real customer behaviour.**
+* **Set `TENANT_POOL_MAX` ≥ the number of workspaces active at the same time** (the pool churn row shows why).
+* Logins are deliberately slow (scrypt ≈ 65 ms CPU, blocking the process): a burst of hundreds of logins in the same second will queue. Not a concern at launch; if it becomes one, move hashing to worker threads.
+* Not measured: real internet latency, TLS, a much larger data volume per workspace (the original single-business soak test covered 50k+ orders), disk-bound behaviour on slow storage.
+
+## Scaling path
+1. Bigger VPS (more RAM → bigger pool).
+2. **Shard by workspace:** add a `node` column to `tenants` and route by it in the proxy (Caddy can pick an upstream per hostname). Each node runs the same image with its own `TENANTS_DIR`; the control database stays on one node (or moves to a small Postgres later). Moving a workspace = suspend, copy one file, update `node`, reactivate.
+3. Nothing in the design shares state between workspaces, which is why step 2 needs no data-model change.
+
+## Verified vs not verified (hosted service)
+**Verified by automated tests (240+) and/or by driving the real pages in a browser:** tenant isolation, host resolution, signup/verification, lifecycle & lapse rules, plan limits, free passes, one-device rule, admin console (TOTP, replay protection, throttling), support sessions, CSV import/export, per-workspace WhatsApp webhooks (signature before parsing), click-to-chat, manual billing + gap-free invoice numbers, PDF engine (Arabic shaping, rendered and read back), Paddle webhook handling with **signed fake webhooks** (signature scheme from Paddle's docs), encrypted backup → restore → drill, SigV4 against the published AWS test vector, graceful shutdown, production boot.
+
+**NOT verified (needs the real thing):**
+* Paddle live/sandbox end-to-end (checkout overlay CSP hosts, API calls written from documentation), and **whether Paddle can pay you out from Lebanon**.
+* Whish Pay (not integrated), Meta coexistence payload shapes, Meta Tech Provider flow.
+* A real SMTP provider, real DNS/wildcard TLS with Caddy, the **Docker image build** (no Docker daemon in the development sandbox: the CI workflow builds and boots it on every push), S3 against a real provider (tested against a fake that checks signatures).
+* Real phones/tablets and Safari/Firefox (browser checks used Chromium only).
+* The legal pages (drafts; lawyer needed).

@@ -1,6 +1,11 @@
-data/
-node_modules/
-.git/
-backups/
-tests/
+.git
+.github
+data
+backups
+node_modules
+tests
+docs
+*.md
 .env
+.env.*
+!.env.example

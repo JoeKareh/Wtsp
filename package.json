@@ -12,10 +12,15 @@
     "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec tests/*.test.js",
     "create-admin": "node --disable-warning=ExperimentalWarning scripts/create-admin.js",
     "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
-    "start:demo": "DB_PATH=data/demo.sqlite node --disable-warning=ExperimentalWarning server/index.js",
+    "start:demo": "node scripts/run.js DB_PATH=data/demo.sqlite -- server/index.js",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.js",
     "restore": "node --disable-warning=ExperimentalWarning scripts/restore.js",
     "stress": "node --disable-warning=ExperimentalWarning scripts/stress.js",
-    "soak": "node --disable-warning=ExperimentalWarning scripts/soak.js"
+    "soak": "node --disable-warning=ExperimentalWarning scripts/soak.js",
+    "migrate:all": "node --disable-warning=ExperimentalWarning scripts/migrate-all.js",
+    "backup:all": "node --disable-warning=ExperimentalWarning scripts/backup-all.js",
+    "restore:tenant": "node --disable-warning=ExperimentalWarning scripts/restore-tenant.js",
+    "restore:drill": "node --disable-warning=ExperimentalWarning scripts/restore-drill.js",
+    "loadtest": "node --disable-warning=ExperimentalWarning scripts/loadtest-saas.js"
   }
 }

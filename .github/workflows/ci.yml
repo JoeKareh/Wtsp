@@ -1,0 +1,34 @@
+name: CI
+on:
+  push: { branches: [main, saas] }
+  pull_request:
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ matrix.node }}" }
+      - name: Tenant isolation suite (release blocker)
+        run: node --disable-warning=ExperimentalWarning --test tests/isolation.test.js tests/tenancy.test.js
+      - name: Full test suite
+        run: npm test
+      - name: Syntax check of the browser code
+        shell: bash
+        run: for f in public/js/*.js public/js/pages/*.js public-site/*.js public-admin/*.js; do node --check "$f"; done
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t bizcontrol:ci .
+      - name: Image boots and answers /healthz
+        run: |
+          docker run -d --name bc -p 3000:3000 -e APP_DOMAIN=ci.test -e APP_ENCRYPTION_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") bizcontrol:ci
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:3000/healthz && exit 0; sleep 1; done; docker logs bc; exit 1

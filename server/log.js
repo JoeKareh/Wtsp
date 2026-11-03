@@ -5,4 +5,5 @@ const out = (level, args) => {
   const obj = args.find((a) => a && typeof a === 'object' && !(a instanceof Error)); const msg = args.filter((a) => !(a && typeof a === 'object') || a instanceof Error).map((a) => (a instanceof Error ? a.stack : String(a))).join(' ');
   (level === 'error' ? console.error : console.log)(JSON.stringify({ t: stamp(), level, msg, ...(obj || {}) }));
 };
-export const log = { info: (...a) => out('info', a), warn: (...a) => out('warn', a), error: (...a) => out('error', a) };
+import { reportError } from './sentry.js';
+export const log = { info: (...a) => out('info', a), warn: (...a) => out('warn', a), error: (...a) => { out('error', a); const e = a.find((x) => x instanceof Error); if (e) reportError(e, { msg: String(a[0]) }); } };

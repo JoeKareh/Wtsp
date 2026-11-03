@@ -41,6 +41,7 @@ export function installPlatform({ adminResolver } = {}) {
   setReadyCheck(async () => {
     const checks = {}; try { control().prepare('SELECT 1').get(); checks.control = true; } catch { checks.control = false; }
     try { const st = fs.statfsSync(config.tenantsDir.replace(/[\\/]tenants$/, '') || '.'); checks.disk_free_pct = Math.round((st.bavail / st.blocks) * 100); } catch { /* not available */ }
+    const { shutdown } = await import('./shutdown.js'); if (shutdown.draining) return { ok: false, draining: true };
     return { ok: checks.control !== false && (checks.disk_free_pct ?? 100) > 3, ...checks, pool: poolStats() };
   });
 }

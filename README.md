@@ -41,6 +41,10 @@ Demo data lives only in `data/demo.sqlite` and the UI shows a **DEMO DATA** bann
 | **Reports** | 12 reports exported as Excel, CSV and PDF |
 | **Admin** | Roles & per-user permissions, audit log, backup download, all business rules configurable |
 
+## Hosted service (multi-customer, subscriptions)
+
+Set `APP_DOMAIN` and the same code becomes a SaaS: a marketing site at `yourdomain.com`, your admin console at `admin.yourdomain.com` (free passes, payments, customers), and one private workspace per customer at `name.yourdomain.com`. **Start with [docs/LAUNCH_GUIDE.md](docs/LAUNCH_GUIDE.md)** (Docker + automatic HTTPS, step by step). Details: [ARCHITECTURE](docs/ARCHITECTURE.md), [WhatsApp](docs/WHATSAPP_SAAS.md), [Whish Pay](docs/WHISH_PAY.md).
+
 ## Documentation
 
 * [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): run it for real (systemd, HTTPS, Docker)

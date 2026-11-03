@@ -1,0 +1,19 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Marketing site, admin console, and every customer workspace are all served by the same app: it picks what to show from the Host header.
+{$APP_DOMAIN}, *.{$APP_DOMAIN} {
+	tls {
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+	encode zstd gzip
+	reverse_proxy app:3000 {
+		health_uri /readyz
+		health_interval 10s
+		header_up X-Forwarded-Proto https
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+}
