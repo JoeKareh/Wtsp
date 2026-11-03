@@ -119,3 +119,10 @@ POST('/api/support', ALWAYS, (ctx) => {
   audit(ctx.user, 'create', 'support_ticket', null, null, { subject });
   return { ok: true, delivered: Boolean(to), message: to ? 'Thanks! We received your message and will reply by email.' : 'Your message was saved. (Support email is not configured on this server yet.)' };
 });
+
+// ---------------- installable app (PWA / Android wrapper) ----------------
+GET('/api/manifest', { perm: 'public', lifecycle: 'always' }, () => {
+  const st = allSettings(); const name = String(st.business_name || 'BizControl').slice(0, 45);
+  return raw(JSON.stringify({ name, short_name: name.slice(0, 12), start_url: '/', scope: '/', display: 'standalone', background_color: '#f4f5f7', theme_color: '#2a78d6', lang: st.language || 'en', dir: st.language === 'ar' ? 'rtl' : 'ltr',
+    icons: [{ src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' }, { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' }] }), 'application/manifest+json');
+});

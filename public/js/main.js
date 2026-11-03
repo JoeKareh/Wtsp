@@ -166,4 +166,5 @@ async function boot() {
 window.addEventListener('hashchange', () => { if (state.user) render(); else boot(); });
 window.addEventListener('session-expired', () => boot());
 window.addEventListener('notifications-changed', refreshUnread);
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
 boot();
