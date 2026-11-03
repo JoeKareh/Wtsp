@@ -14,6 +14,7 @@ import './services/recommendations.js';
 import './services/reports.js';
 import './services/settings.js';
 import './services/clicktochat.js';
+import './services/ask.js';
 import './billing/routes.js';
 import './services/account.js';
 import './demo.js';

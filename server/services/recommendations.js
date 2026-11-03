@@ -9,7 +9,7 @@ import { config } from '../config.js';
 
 const VALID = "status NOT IN ('Draft','Cancelled','Returned')";
 
-function productWindow(from, to) {
+export function productWindow(from, to) {
   const rec = recognizedSql('o'); const rd = recDateSql('o');
   return all(`SELECT i.product_id id, COALESCE(p.name,i.description) name, SUM(i.qty) units, SUM(CAST(ROUND(i.line_total*1.0/o.fx_rate) AS INTEGER)) revenue, SUM(CAST(ROUND(i.line_cost*1.0/o.fx_rate) AS INTEGER)) cost
     FROM order_items i JOIN v_orders_fin o ON o.id=i.order_id LEFT JOIN products p ON p.id=i.product_id WHERE ${rec} AND ${rd} BETWEEN ? AND ? AND i.product_id IS NOT NULL GROUP BY i.product_id`, from, to)

@@ -14,6 +14,7 @@ const ICONS = {
   marketing: 'M21 11.5a8.4 8.4 0 01-12.2 7.5L3 21l2-5.6A8.5 8.5 0 1121 11.5z',
   notifications: 'M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8M13.7 20a2 2 0 01-3.4 0',
   reports: 'M14 3H6v18h12V7l-4-4zM14 3v4h4M9 13h6M9 17h6',
+  ask: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16z',
   billing: 'M2 7h20v12H2V7zm0 4h20M6 15h4',
   help: 'M12 21a9 9 0 100-18 9 9 0 000 18zm0-6v-1c0-1.500 2-2 2-3.500a2 2 0 00-4 0M12 17.500v.01',
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zm7.4-3a7.4 7.4 0 00-.1-1.3l2-1.6-2-3.4-2.4 1a7 7 0 00-2.2-1.3L14.300 3h-4l-.4 2.400a7 7 0 00-2.200 1.300l-2.400-1-2 3.400 2 1.600a7.400 7.400 0 000 2.600l-2 1.600 2 3.400 2.400-1a7 7 0 002.200 1.300l.4 2.400h4l.4-2.400a7 7 0 002.200-1.300l2.400 1 2-3.400-2-1.600c.1-.4.100-.9.100-1.300z',
@@ -31,6 +32,7 @@ const NAV = [
   ['notifications', 'Notifications', 'notifications', () => can('notifications:read')],
   ['reports', 'Reports', 'reports', () => can('reports:read')],
   ['settings', 'Settings', 'settings', () => canAny('settings:write', 'users:manage')],
+  ['ask', 'Ask your business', 'ask', () => can('analytics:read')],
   ['billing', 'Billing', 'billing', () => state.saas && can('users:manage')],
   ['help', 'Help', 'help', () => true],
 ];
@@ -39,7 +41,7 @@ const PAGES = {
   products: () => import('./pages/products.js'), payments: () => import('./pages/payments.js'), expenses: () => import('./pages/expenses.js'),
   analytics: () => import('./pages/analytics.js'), marketing: () => import('./pages/marketing.js'), notifications: () => import('./pages/notifications.js'),
   reports: () => import('./pages/reports.js'), settings: () => import('./pages/settings.js'),
-  billing: () => import('./pages/billing.js'), help: () => import('./pages/help.js'), 'whatsapp-setup': () => import('./pages/whatsapp-setup.js'), 'get-started': () => import('./pages/onboarding.js'),
+  ask: () => import('./pages/ask.js'), billing: () => import('./pages/billing.js'), help: () => import('./pages/help.js'), 'whatsapp-setup': () => import('./pages/whatsapp-setup.js'), 'get-started': () => import('./pages/onboarding.js'),
 };
 // every page enforces its permission, not just the menu (the server enforces it again on every API call)
 for (const [k, loader] of Object.entries(PAGES)) route('/' + k, async (view, q) => {

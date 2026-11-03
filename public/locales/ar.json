@@ -241,5 +241,13 @@
  "Create product": "إنشاء منتج",
  "Save changes": "حفظ التغييرات",
  "Everyone you sell to. Phone numbers are unique, so duplicates are caught automatically.": "كل من تبيع له. أرقام الهواتف فريدة لذا تُكتشف التكرارات تلقائياً.",
- "How the business is doing, at a glance.": "كيف يسير عملك بنظرة سريعة."
+ "How the business is doing, at a glance.": "كيف يسير عملك بنظرة سريعة.",
+ "Ask your business": "اسأل عن عملك",
+ "Ask": "اسأل",
+ "Thinking…": "جارٍ التفكير…",
+ "Who owes me money?": "من عليه ديون لي؟",
+ "What were my best products this month?": "ما أفضل منتجاتي هذا الشهر؟",
+ "How much profit did I make last month?": "كم ربحت الشهر الماضي؟",
+ "What should I reorder?": "ماذا يجب أن أعيد طلبه؟",
+ "Ask a question in your own words. The assistant looks at your figures (it can only read, never change anything).": "اسأل بكلماتك. المساعد يطّلع على أرقامك (للقراءة فقط ولا يغيّر شيئاً)."
 }

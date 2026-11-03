@@ -128,6 +128,10 @@ Nothing breaks without it: the Billing page shows "card payments are being set u
 8. Switch to live: repeat 2–5 with live values and `PADDLE_ENV=production`.
 9. Paddle is the **merchant of record**: it handles VAT/sales tax and invoices for card payments. Your own PDF invoices cover manual payments.
 
+## AI assistant ("Ask your business") – optional
+
+Set `ANTHROPIC_API_KEY` in `.env` (from console.anthropic.com) and restart. Growth and Business plans include it (200 / 1,000 questions per month, editable in Plans → "ai credits month"); each answered question uses one credit and **you pay Anthropic per question** (a few cents or less), so check that your plan prices cover it. The assistant can only call read-only tools over the customer's own data; phone numbers and emails are never sent. Not verified against the live Anthropic API in development (tested with a fake server).
+
 ## Whish Pay (online payments in Lebanon)
 
 Stubbed, not live: Whish's merchant API terms must be confirmed with Whish Money (see `docs/WHISH_PAY.md`). Until then use manual payment.
