@@ -46,8 +46,16 @@ function loadUser(id) {
 const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, language: u.language || null, permissions: u.permissions.includes('*') ? ALL_PERMS : u.permissions });
 
 // ---------- sessions ----------
+/** Hosted mode: an account is for one person at a time. Signing in on another device/browser signs the previous one out. The operator can raise the limit per workspace. */
+function enforceSessionLimit(userId) {
+  const t = currentTenantContext()?.tenant; if (!t) return;
+  const flags = safeJson(t.flags, {}); const max = Math.max(1, Number(flags.max_sessions ?? process.env.SESSION_LIMIT ?? 1));
+  const rows = all('SELECT s.id FROM sessions s LEFT JOIN session_flags f ON f.session_id=s.id WHERE s.user_id=? AND f.session_id IS NULL ORDER BY s.created_at DESC', userId);
+  for (const r of rows.slice(max - 1)) run('DELETE FROM sessions WHERE id=?', r.id);
+}
 export function createSession(ctx, userId, opts = {}) {
   const token = crypto.randomBytes(32).toString('hex');
+  if (!opts.impersonator && !opts.readonly) enforceSessionLimit(userId);
   const exp = new Date(Date.now() + SESSION_DAYS * 864e5).toISOString();
   run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?)', sha256(token), userId, nowIso(), opts.expires || exp, nowIso(), ctx.ip, String(ctx.req.headers['user-agent'] || '').slice(0, 200));
   if (opts.impersonator || opts.readonly) run('INSERT INTO session_flags(session_id,impersonator,readonly) VALUES (?,?,?)', sha256(token), opts.impersonator || null, opts.readonly ? 1 : 0);

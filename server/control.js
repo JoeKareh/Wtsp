@@ -56,6 +56,11 @@ CREATE TABLE platform_outbox (
 CREATE TABLE counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE surveys (id INTEGER PRIMARY KEY, tenant_id TEXT, kind TEXT NOT NULL, answer TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE alerts_sent (key TEXT PRIMARY KEY, at TEXT NOT NULL);
+`, `
+CREATE TABLE passes (
+  code TEXT PRIMARY KEY, plan_code TEXT NOT NULL, days INTEGER, unlimited INTEGER NOT NULL DEFAULT 0, max_uses INTEGER NOT NULL DEFAULT 1, used INTEGER NOT NULL DEFAULT 0,
+  note TEXT, expires_at TEXT, active INTEGER NOT NULL DEFAULT 1, created_by TEXT, created_at TEXT NOT NULL
+);
 `];
 
 export function control() {

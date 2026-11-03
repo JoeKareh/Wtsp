@@ -19,6 +19,7 @@ import './services/account.js';
 import './demo.js';
 import './platform.js';
 import './admin.js';
+import './passes.js';
 import { config } from './config.js';
 import { createServer } from './http.js';
 import { ensureRoles } from './auth.js';

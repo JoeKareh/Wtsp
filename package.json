@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec tests/*.test.js",
+    "create-admin": "node --disable-warning=ExperimentalWarning scripts/create-admin.js",
     "seed:demo": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
     "start:demo": "DB_PATH=data/demo.sqlite node --disable-warning=ExperimentalWarning server/index.js",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.js",

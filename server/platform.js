@@ -10,6 +10,7 @@ import { sendPlatformEmail } from './platformmail.js';
 import { gate, setTenantStatus, TRIAL_DAYS, addD } from './lifecycle.js';
 import { ensureDefaultTemplates } from './services/whatsapp.js';
 import { COUNTRIES, countryList, LANGUAGES, CURRENCIES, RESERVED_SUBDOMAINS, DISPOSABLE_EMAIL_DOMAINS } from './countries.js';
+import { checkCode, redeemCode } from './passes.js';
 import { allow } from './ratelimit.js';
 import { HttpError, bad, nowIso, safeJson, email as vEmail, str } from './util.js';
 import { log } from './log.js';
@@ -110,7 +111,8 @@ POST('/api/platform/signup', P, async (ctx) => {
   if (cGet('SELECT COUNT(*) c FROM accounts WHERE email=?', email).c >= 3) throw new HttpError(429, 'This email already has the maximum number of workspaces.');
   // only real creations count toward the tight limit
   if (!allow('signup:' + ctx.ip, 5, 3600e3) || !allow('signup-day:' + ctx.ip, 15, 86400e3)) throw new HttpError(429, 'Too many workspaces created from your network. Please try again later.');
-  const id = provisionTenant({ business_name, owner_name, email, password: b.password, country, currency, language, subdomain, ip: ctx.ip });
+  const pass = b.pass ? String(b.pass).trim().toUpperCase() : null; if (pass && !checkCode(pass)) throw bad('That pass code is not valid or was already used');
+  const id = provisionTenant({ business_name, owner_name, email, password: b.password, country, currency, language, subdomain, ip: ctx.ip, flags: pass ? { pass_code: pass } : {} });
   const t = tenantRow(id); const a = cGet('SELECT * FROM accounts WHERE id=?', t.account_id);
   sendVerify(t, a); paudit('signup', 'signup', id, { email, country, subdomain }, ctx.ip);
   return { ok: true, subdomain, message: 'Check your email to confirm your address and activate your workspace.' };
@@ -130,6 +132,7 @@ POST('/api/platform/verify', P, (ctx) => {
     const flags = { ...safeJson(t.flags, {}), trial_granted: trialUsed ? 0 : 1 };
     if (trialUsed) setTenantStatus(t.id, 'suspended', { verified_at: nowIso(), suspended_reason: 'trial_used', flags: JSON.stringify(flags) }, 'system', 'email already used a trial');
     else setTenantStatus(t.id, 'trialing', { verified_at: nowIso(), trial_ends_at: addD(nowIso(), TRIAL_DAYS), flags: JSON.stringify(flags) }, 'system', 'email verified');
+    const pc = safeJson(t.flags, {}).pass_code; if (pc) redeemCode(tenantRow(t.id), pc);
     const t2 = tenantRow(t.id); sendPlatformEmail('welcome', a.email, { name: a.name, business: t2.business_name, url: config.tenantUrl(t2.subdomain), date: (t2.trial_ends_at || '').slice(0, 10) }, a.language || 'en');
   }
   return { ok: true, tenant_url: config.tenantUrl(t.subdomain), subdomain: t.subdomain };
