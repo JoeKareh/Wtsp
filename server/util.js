@@ -20,16 +20,22 @@ export function str(v, name, { required = false, max = 500, min = 0 } = {}) {
   if (s.length < min) throw bad(`${name} is too short`);
   return s;
 }
+/** Accepts JSON numbers or plain decimal strings only: no exponents, hex, whitespace, booleans, arrays or objects. */
+const plainNumber = (v, name) => {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  throw bad(`${name} must be a number`);
+};
 export function int(v, name, { required = false, min = -Infinity, max = Infinity, def = 0 } = {}) {
   if (v === undefined || v === null || v === '') { if (required) throw bad(`${name} is required`); return def; }
-  const n = Number(v);
+  const n = plainNumber(v, name);
   if (!Number.isFinite(n) || !Number.isInteger(n)) throw bad(`${name} must be a whole number`);
   if (n < min || n > max) throw bad(`${name} must be between ${min} and ${max}`);
   return n;
 }
 export function num(v, name, { required = false, min = -Infinity, max = Infinity, def = 0 } = {}) {
   if (v === undefined || v === null || v === '') { if (required) throw bad(`${name} is required`); return def; }
-  const n = Number(v);
+  const n = plainNumber(v, name);
   if (!Number.isFinite(n)) throw bad(`${name} must be a number`);
   if (n < min || n > max) throw bad(`${name} must be between ${min} and ${max}`);
   return n;

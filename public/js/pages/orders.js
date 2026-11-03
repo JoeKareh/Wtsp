@@ -184,7 +184,7 @@ export async function orderForm(order, onDone, afterClose, prefill) {
     if (finance) body.extra_cost = toCents(g('extra_cost') || '0');
     try {
       const saved = order ? await put('/api/orders/' + order.id, body) : await api2(body, asDraft ? 'Draft' : g('status'));
-      toast(`Order ${saved.number} saved`, 'success'); m.close(); onDone?.(saved); window.dispatchEvent(new Event('notifications-changed')); if (!order) openOrder(saved.id, onDone);
+      toast(`Order ${saved.number} saved`, 'success'); if (saved.warning) toast(saved.warning); m.close(); onDone?.(saved); window.dispatchEvent(new Event('notifications-changed')); if (!order) openOrder(saved.id, onDone);
     } catch (e) { showErr(e.message); busy = false; $$('button', m.foot).forEach((b) => (b.disabled = false)); }
   };
   const api2 = (body, status) => post('/api/orders', { ...body, status }, { 'Idempotency-Key': key });

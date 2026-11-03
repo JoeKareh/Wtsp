@@ -29,6 +29,25 @@ Two SQL **views** are the single source of truth for order money (`v_orders`, `v
 * CSP forbids inline scripts. Audit log records who/what/before/after for sensitive changes (orders, payments, expenses, products, users, settings, consent, campaigns, logins).
 * Webhooks require a valid HMAC signature (`X-Hub-Signature-256`).
 
+## Measured performance and robustness
+Measured on a small cloud VM, one Node process, SQLite file (40,000 orders, 5,000 customers, ~27,000 payments, 20 MB database):
+
+| Operation | Time |
+|---|---|
+| Orders list / search (by name or phone) | 55-100 ms |
+| Customer list with lifecycle calculation / profile | 180-240 ms / 80-120 ms |
+| Dashboard, first load for a period (then cached until the next write, max 30 s) | ~1.0 s |
+| 20 people opening the dashboard at once | 1.1 s total |
+| Finance summary / receivables / WhatsApp segments | 0.13 s / 0.4 s / 0.7 s |
+| Excel / PDF export of 5,000 customers / 30 days of orders | 0.3 s / 0.2 s |
+| Recommendations refresh / alert check | 0.6 s / 0.3 s |
+
+Mixed soak (random orders, edits, status changes, payments, voids, refunds, stock, expenses, reports, analytics): **~90 operations/s with 12 concurrent workers; p50 70 ms, p95 650 ms; zero server errors**, and afterwards every invariant held (paid == sum of live allocations, no payment over-allocated, stock == sum of movements, unique order numbers, foreign keys, SQLite integrity). With the heap capped at 96 MB the server handled 6,000+ extra requests with flat memory.
+
+What scale means here: this is one process doing synchronous database work, so a slow request delays others. It is comfortable for a small business (a few users, tens of thousands of orders). It is not designed for hundreds of simultaneous users or millions of rows. For that you would move to PostgreSQL and multiple workers.
+
+Pressure-testing found and fixed: a dashboard that took 2.3 s (32 s for 20 concurrent users), notification floods (11,000 alerts from a large backlog; now capped at 25 + a summary), malformed JSON bodies returning 500, lenient number parsing (`"1e3"`, `true`), a payment that had been refunded being voidable (making an order's paid amount negative), and dialogs staying open across page navigation.
+
 ## Verified vs. not verified
 **Verified by automated tests / browser runs:** everything in the README table except the live third-party services below. The UI was driven end-to-end in headless Chromium (first-run setup → product → customer → order → status → payment → dashboard, dark mode persistence, mobile menu and no horizontal overflow at 390 px width).
 

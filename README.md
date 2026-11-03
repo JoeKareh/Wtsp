@@ -56,6 +56,15 @@ npm test      # 70+ automated tests
 
 The suite boots the real server against a throw-away database and covers customers & duplicate detection, order maths, partial / split / cross-currency payments, edit / void / cancel / refund, profit vs cash, inventory & alerts, lifecycle classification, WhatsApp consent enforcement (against a fake Graph API), webhook signatures, campaign scheduling, roles & restricted data, password reset, SMTP delivery, every report format, and backups.
 
+### Pressure tests
+
+```bash
+npm run stress            # 5,000 customers / 40,000 orders: times every key endpoint, serial and concurrent
+npm run soak -- 60 12     # 12 concurrent workers doing random operations for 60 s, then verifies all financial/stock invariants
+```
+
+`tests/hostile.test.js` (part of `npm test`) covers concurrency races (30 simultaneous payments on one order, duplicate-key retries, parallel order numbering, parallel duplicate customers, stock ledger), SQL-injection attempts on every filter, malformed/oversized bodies, numeric abuse, path traversal and cookie tampering.
+
 ## Configuration summary
 
 Business rules (currencies, tax, revenue recognition, stock deduction, inactivity periods, thresholds, targets, alert rules, payment methods, categories, permissions) are set in the **Settings** screen. Secrets (WhatsApp, SMTP, AI) are **environment variables** only (see `.env.example`).

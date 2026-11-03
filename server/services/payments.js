@@ -57,6 +57,14 @@ function writeAllocations(payment, allocs) {
   return sum;
 }
 
+/** Voiding or lowering a payment must never leave refunds exceeding what the customer actually paid. */
+function assertNotOverRefunded(customerId) {
+  const neg = get("SELECT number FROM v_orders WHERE customer_id=? AND paid < 0 AND status NOT IN ('Cancelled','Returned') LIMIT 1", customerId);
+  if (neg) throw bad(`This would leave order ${neg.number} with more refunded than paid. Refunds were already issued against it: void or reduce the refund first.`);
+  const net = get(`SELECT COALESCE(SUM(CASE type WHEN 'payment' THEN 1 ELSE -1 END * CAST(ROUND(amount*1.0/fx_rate) AS INTEGER)),0) n FROM payments WHERE customer_id=? AND voided=0`, customerId).n;
+  if (net < -1) throw bad('This would leave the customer with more refunded than paid in total. Void or reduce the related refund first.');
+}
+
 export function getPayment(id) {
   const p = get(`SELECT p.*, c.name AS customer_name, c.code AS customer_code, ${BASE_SQL} AS amount_base FROM payments p JOIN customers c ON c.id=p.customer_id WHERE p.id=?`, id);
   if (!p) return null;
@@ -111,6 +119,7 @@ export function updatePayment(id, b, user) {
     let allocs = Array.isArray(b.allocations) ? b.allocations : before.allocations.map((a) => ({ order_id: a.order_id, amount: a.amount }));
     if (b.auto_allocate) allocs = autoAllocate(cur.customer_id, v.amount, fx, cur.type);
     writeAllocations({ id, customer_id: cur.customer_id, type: cur.type, amount: v.amount, fx_rate: fx }, allocs);
+    assertNotOverRefunded(cur.customer_id);
     const after = getPayment(id);
     audit(user, 'update', 'payment', id, { amount: before.amount, currency: before.currency, method: before.method, paid_at: before.paid_at, allocations: before.allocations.map((a) => [a.number, a.amount]) },
       { amount: after.amount, currency: after.currency, method: after.method, paid_at: after.paid_at, allocations: after.allocations.map((a) => [a.number, a.amount]) }, str(b.reason, 'Reason', { max: 300 }));
@@ -125,6 +134,7 @@ export function voidPayment(id, reason, user) {
     if (cur.voided) throw bad('This payment is already voided');
     const why = str(reason, 'Reason', { required: true, max: 300 });
     run('UPDATE payments SET voided=1, void_reason=?, voided_at=?, voided_by=?, updated_at=? WHERE id=?', why, nowIso(), user?.id ?? null, nowIso(), id);
+    if (cur.type === 'payment') assertNotOverRefunded(cur.customer_id);
     audit(user, 'void', 'payment', id, { amount: cur.amount, voided: false }, { voided: true }, why);
     notify({ type: 'unusual_transaction', title: `Payment ${cur.code} voided`, body: `${(cur.amount / 100).toFixed(2)} ${cur.currency}. Reason: ${why}`, link: `#/payments?open=${id}`, entity_type: 'payment', entity_id: id });
     return getPayment(id);

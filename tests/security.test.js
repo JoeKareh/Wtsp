@@ -27,7 +27,7 @@ before(async () => {
   await ok('POST', '/api/auth/setup', { name: 'Owner', email: 'owner@test.com', password: 'secret-pass-1', business_name: 'Sec Shop' });
   today = (await ok('GET', '/api/bootstrap')).today;
 });
-after(async () => { await t.close(); smtp.close(); });
+after(async () => { smtp.close(); await t?.close(); });  // close helpers first so a failed boot can never leave the process hanging
 
 describe('authentication & sessions', () => {
   test('setup can only run once; unauthenticated requests are rejected', async () => {

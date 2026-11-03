@@ -28,7 +28,7 @@ before(async () => {
   wa = await import('../server/services/whatsapp.js');
   await ok('POST', '/api/auth/setup', { name: 'Owner', email: 'o@t.com', password: 'secret-pass-1', business_name: 'Olive Shop' });
 });
-after(async () => { await t.close(); graph.close(); });
+after(async () => { graph.close(); await t?.close(); });
 
 const mkCust = async (name, phone, extra = {}) => ok('POST', '/api/customers', { name, phone, ...extra });
 const optIn = (id) => ok('POST', `/api/customers/${id}/consent`, { status: 'opted_in', source: 'Signed form' });

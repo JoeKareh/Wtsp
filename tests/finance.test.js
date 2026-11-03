@@ -268,6 +268,60 @@ describe('customer lifecycle classification', () => {
   });
 });
 
+describe('refund safety', () => {
+  test('a payment that has been refunded cannot be voided or lowered (paid can never go negative)', async () => {
+    const cu = await ok('POST', '/api/customers', { name: 'Refunded Rita', phone: '70 616 161' });
+    const o = await ok('POST', '/api/orders', { customer_id: cu.id, status: 'Confirmed', items: [{ description: 'x', qty: 1, unit_price: 1000 }] });
+    const p = await ok('POST', '/api/payments', { customer_id: cu.id, amount: 1000, method: 'Cash', allocations: [{ order_id: o.id, amount: 1000 }] });
+    const rf = await ok('POST', '/api/payments', { customer_id: cu.id, type: 'refund', amount: 600, method: 'Cash', allocations: [{ order_id: o.id, amount: 600 }] });
+    assert.equal((await ok('GET', `/api/orders/${o.id}`)).paid, 400);
+    const v = await c.post(`/api/payments/${p.id}/void`, { reason: 'oops' }); assert.equal(v.status, 400); assert.match(v.data.error, /refunded/);
+    const e = await c.put(`/api/payments/${p.id}`, { amount: 500, allocations: [{ order_id: o.id, amount: 500 }] }); assert.equal(e.status, 400);
+    assert.equal((await ok('GET', `/api/orders/${o.id}`)).paid, 400, 'failed attempts changed nothing');
+    assert.equal((await ok('GET', `/api/payments/${p.id}`)).voided, false);
+    // raising the amount is fine; and once the refund is voided the original can be voided too
+    await ok('PUT', `/api/payments/${p.id}`, { amount: 1000, allocations: [{ order_id: o.id, amount: 1000 }], reason: 'no change' });
+    await ok('POST', `/api/payments/${rf.id}/void`, { reason: 'refund cancelled' }); await ok('POST', `/api/payments/${p.id}/void`, { reason: 'now fine' });
+    assert.equal((await ok('GET', `/api/orders/${o.id}`)).paid, 0);
+  });
+  test('editing an order below what was already paid warns and turns the difference into refundable credit', async () => {
+    const cu = await ok('POST', '/api/customers', { name: 'Edit Ed', phone: '70 717 171' });
+    const o = await ok('POST', '/api/orders', { customer_id: cu.id, status: 'Confirmed', items: [{ description: 'x', qty: 1, unit_price: 5000 }] });
+    await ok('POST', '/api/payments', { customer_id: cu.id, amount: 5000, method: 'Cash', allocations: [{ order_id: o.id, amount: 5000 }] });
+    const e = await ok('PUT', `/api/orders/${o.id}`, { items: [{ id: o.items[0].id, description: 'x', qty: 1, unit_price: 2000 }] });
+    assert.equal(e.credit, 3000); assert.match(e.warning, /customer credit/);
+    await ok('POST', '/api/payments', { customer_id: cu.id, type: 'refund', amount: 3000, method: 'Cash', allocations: [{ order_id: o.id, amount: 3000 }] });
+    const after_ = await ok('GET', `/api/orders/${o.id}`); assert.equal(after_.balance, 0); assert.equal(after_.payment_status, 'Paid');
+  });
+});
+
+describe('alert flood protection', () => {
+  test('a large backlog produces at most 25 individual alerts plus one summary, and clears when fixed', async () => {
+    const cu = await ok('POST', '/api/customers', { name: 'Backlog', phone: '70 555 111' }); const ids = [];
+    for (let i = 0; i < 40; i++) ids.push((await ok('POST', '/api/orders', { customer_id: cu.id, status: 'Processing', order_date: '2025-02-01', expected_date: '2025-02-03', items: [{ description: 'late', qty: 1, unit_price: 100 }] })).id);
+    await ok('POST', '/api/notifications/run-checks'); await ok('POST', '/api/notifications/run-checks');
+    const live = () => ok('GET', '/api/notifications?all=1&limit=300').then((r) => r.rows.filter((n) => n.type === 'order_overdue' && !n.resolved_at && ids.some((id) => n.dedupe_key === `overdue:${id}`)));
+    assert.equal((await live()).length, 25, 'capped');
+    const all_ = (await ok('GET', '/api/notifications?all=1&limit=300')).rows; const sum = all_.filter((n) => n.dedupe_key === 'overdue:summary' && !n.resolved_at);
+    assert.equal(sum.length, 1); assert.match(sum[0].title, /more orders are overdue/);
+    for (const id of ids) await ok('POST', `/api/orders/${id}/status`, { status: 'Delivered' });
+    await ok('POST', '/api/notifications/run-checks');
+    assert.equal((await live()).length, 0, 'individual alerts resolved'); assert.ok(!(await ok('GET', '/api/notifications?all=1&limit=300')).rows.some((n) => n.dedupe_key === 'overdue:summary' && !n.resolved_at), 'summary resolved');
+  });
+});
+
+describe('dashboard cache', () => {
+  test('is never stale: a write is reflected immediately in the next read', async () => {
+    const q = `/api/analytics?range=custom&from=${today}&to=${today}&compare=none`;
+    const a = await ok('GET', q); const a2 = await ok('GET', q); assert.deepEqual(a.kpis, a2.kpis, 'repeat read is stable');
+    const cu = await ok('POST', '/api/customers', { name: 'Cache Tester', phone: '70 777 888' });
+    await ok('POST', '/api/orders', { customer_id: cu.id, status: 'Delivered', items: [{ description: 'x', qty: 1, unit_price: 12345, unit_cost: 0 }] });
+    const b = await ok('GET', q); assert.equal(b.kpis.revenue, a.kpis.revenue + 12345); assert.equal(b.kpis.total_orders, a.kpis.total_orders + 1);
+    await ok('POST', '/api/payments', { customer_id: cu.id, amount: 345, method: 'Cash', auto_allocate: true });
+    assert.equal((await ok('GET', q)).kpis.collected, b.kpis.collected + 345);
+  });
+});
+
 describe('oversold (negative) stock', () => {
   test('stock may go negative on a real sale, alerts fire, and recommendations never show negative days of cover', async () => {
     const p = await ok('POST', '/api/products', { name: 'Oversold item', cost: 100, price: 300, quantity: 1, min_stock: 1 });

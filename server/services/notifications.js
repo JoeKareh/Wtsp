@@ -73,7 +73,7 @@ export function checkStock(productId) {
   return n;
 }
 
-function checkMovement() {
+export function checkMovement() {
   const st = allSettings(); const today = todayStr(st.timezone); let n = 0;
   const since = addDays(today, -30); const slowSince = addDays(today, -Number(st.slow_moving_days));
   const sales = all(`SELECT i.product_id id, SUM(CASE WHEN o.order_date>=? THEN i.qty ELSE 0 END) u30, MAX(o.order_date) last_sale
@@ -96,34 +96,41 @@ function checkMovement() {
   return n;
 }
 
-function checkOrders() {
+export function checkOrders() {
   const st = allSettings(); const today = todayStr(st.timezone); let n = 0;
   const cutoff = new Date(Date.now() - Number(st.pending_hours_alert) * 3600e3).toISOString();
-  for (const o of all("SELECT id, number, created_at FROM orders WHERE status='Pending' AND created_at < ?", cutoff)) {
-    n += ensure(`pending_long:${o.id}`, true, { type: 'order_pending_long', title: `Order ${o.number} pending for over ${st.pending_hours_alert}h`, body: 'Confirm or cancel this order.', link: `#/orders?open=${o.id}`, entity_type: 'order', entity_id: o.id });
-  }
-  run("UPDATE notifications SET resolved_at=? WHERE type='order_pending_long' AND resolved_at IS NULL AND entity_id NOT IN (SELECT CAST(id AS TEXT) FROM orders WHERE status='Pending' AND created_at < ?)", nowIso(), cutoff);
   const open = ['Pending', 'Confirmed', 'Processing', 'Ready', 'Out for delivery'];
-  const late = all(`SELECT o.id, o.number, o.expected_date, o.status, c.name FROM orders o JOIN customers c ON c.id=o.customer_id
-     WHERE o.expected_date < ? AND o.status IN (${open.map((x) => `'${x}'`).join(',')})`, today);
-  for (const o of late) {
-    n += ensure(`overdue:${o.id}`, true, { type: 'order_overdue', title: `Order ${o.number} is overdue`, body: `${o.name} - expected ${o.expected_date} (${diffDays(o.expected_date, today)} days late), status ${o.status}.`, link: `#/orders?open=${o.id}`, entity_type: 'order', entity_id: o.id });
-  }
-  run(`UPDATE notifications SET resolved_at=? WHERE type='order_overdue' AND resolved_at IS NULL AND entity_id NOT IN (SELECT CAST(id AS TEXT) FROM orders WHERE expected_date < ? AND status IN (${open.map((x) => `'${x}'`).join(',')}))`, nowIso(), today);
+  const CAP = 25; // individual alerts for the worst cases only, plus one summary: a big backlog must not bury the owner in thousands of alerts
+  const capped = (type, prefix, rows, mk, summaryTitle, link) => {
+    const keep = rows.slice(0, CAP);
+    for (const o of keep) n += ensure(`${prefix}:${o.id}`, true, mk(o));
+    const ids = keep.map((o) => String(o.id));
+    run(`UPDATE notifications SET resolved_at=? WHERE type=? AND resolved_at IS NULL AND dedupe_key LIKE ? AND dedupe_key<>? AND entity_id NOT IN (${ids.length ? ids.map(() => '?').join(',') : "''"})`, nowIso(), type, `${prefix}:%`, `${prefix}:summary`, ...ids);
+    n += ensure(`${prefix}:summary`, rows.length > CAP, { type, title: summaryTitle(rows.length - CAP), body: 'Open the Pending orders board for the full list.', link });
+  };
+  capped('order_pending_long', 'pending_long', all("SELECT id, number, created_at FROM orders WHERE status='Pending' AND created_at < ? ORDER BY created_at", cutoff),
+    (o) => ({ type: 'order_pending_long', title: `Order ${o.number} pending for over ${st.pending_hours_alert}h`, body: 'Confirm or cancel this order.', link: `#/orders?open=${o.id}`, entity_type: 'order', entity_id: o.id }),
+    (k) => `${k} more orders have been pending for over ${st.pending_hours_alert}h`, '#/orders?tab=pending');
+  capped('order_overdue', 'overdue', all(`SELECT o.id, o.number, o.expected_date, o.status, c.name FROM orders o JOIN customers c ON c.id=o.customer_id WHERE o.expected_date < ? AND o.status IN (${open.map((x) => `'${x}'`).join(',')}) ORDER BY o.expected_date`, today),
+    (o) => ({ type: 'order_overdue', title: `Order ${o.number} is overdue`, body: `${o.name} - expected ${o.expected_date} (${diffDays(o.expected_date, today)} days late), status ${o.status}.`, link: `#/orders?open=${o.id}`, entity_type: 'order', entity_id: o.id }),
+    (k) => `${k} more orders are overdue`, '#/orders?overdue=1');
   // unpaid balances older than N days, grouped per customer
   const cut = addDays(today, -Number(st.unpaid_alert_days));
   const rows = all(`SELECT c.id, c.name, SUM(f.balance_base) bal, MIN(f.order_date) oldest FROM v_orders_fin f JOIN customers c ON c.id=f.customer_id
-     WHERE f.balance>0 AND f.order_date<=? GROUP BY c.id`, cut);
+     WHERE f.balance>0 AND f.order_date<=? AND f.status NOT IN ('Draft','Cancelled','Returned') GROUP BY c.id ORDER BY bal DESC`, cut);
+  // One alert per customer for the biggest debts only: importing a large history must not bury the owner in thousands of alerts.
   const have = new Set();
-  for (const r of rows) { have.add(r.id); n += ensure(`unpaid:${r.id}`, true, { type: 'unpaid_balance', title: `${r.name} has an unpaid balance`, body: `Outstanding ${(r.bal / 100).toFixed(2)} ${st.base_currency}; oldest order ${r.oldest}.`, link: `#/customers?open=${r.id}`, entity_type: 'customer', entity_id: r.id }); }
-  for (const r of all("SELECT DISTINCT entity_id FROM notifications WHERE type='unpaid_balance' AND resolved_at IS NULL")) if (!have.has(Number(r.entity_id))) resolveKey(`unpaid:${r.entity_id}`);
+  for (const r of rows.slice(0, CAP)) { have.add(r.id); n += ensure(`unpaid:${r.id}`, true, { type: 'unpaid_balance', title: `${r.name} has an unpaid balance`, body: `Outstanding ${(r.bal / 100).toFixed(2)} ${st.base_currency}; oldest order ${r.oldest}.`, link: `#/customers?open=${r.id}`, entity_type: 'customer', entity_id: r.id }); }
+  for (const r of all("SELECT DISTINCT entity_id FROM notifications WHERE type='unpaid_balance' AND dedupe_key LIKE 'unpaid:%' AND resolved_at IS NULL")) if (!have.has(Number(r.entity_id))) resolveKey(`unpaid:${r.entity_id}`);
+  const rest = rows.slice(CAP);
+  n += ensure('unpaid:summary', rest.length > 0, { type: 'unpaid_balance', title: `${rest.length} more customers have unpaid balances`, body: `Together ${(rest.reduce((a, x) => a + x.bal, 0) / 100).toFixed(2)} ${st.base_currency}. See Payments & Finances → Receivables for the full list.`, link: '#/payments?tab=receivables' });
   return n;
 }
 
 function revenueBetween(a, b) {
   return get(`SELECT COALESCE(SUM(revenue_base),0) r FROM v_orders_fin o WHERE ${recognizedSql('o')} AND ${recDateSql('o')} BETWEEN ? AND ?`, a, b).r;
 }
-function checkTargets() {
+export function checkTargets() {
   const st = allSettings(); const today = todayStr(st.timezone); let n = 0;
   const cur = (v) => `${(v / 100).toFixed(2)} ${st.base_currency}`;
   if (st.daily_sales_target > 0) {
@@ -141,7 +148,7 @@ function checkTargets() {
   return n;
 }
 
-function checkInactive() {
+export function checkInactive() {
   const st = allSettings(); const today = todayStr(st.timezone); let n = 0;
   const hi = addDays(today, -Number(st.inactive_days)); const lo = addDays(today, -Number(st.inactive_days) - 7);
   for (const c of all(`SELECT c.id, c.name, MAX(o.order_date) last FROM customers c JOIN orders o ON o.customer_id=c.id

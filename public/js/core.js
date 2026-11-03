@@ -167,6 +167,7 @@ export const go = (hash) => { if (location.hash === hash) window.dispatchEvent(n
 export async function dispatch(view) {
   const { path, query } = parseHash();
   const r = routes.find((x) => x.path === path) || routes[0];
+  document.querySelectorAll('.overlay').forEach((o) => o.remove()); // dialogs never outlive the page they were opened on
   if (cleanup) { try { cleanup(); } catch { /* ignore */ } cleanup = null; }
   view.innerHTML = '<div class="loading">Loading…</div>';
   try { const c = await r.loader(view, query); if (typeof c === 'function') cleanup = c; }

@@ -76,6 +76,7 @@ PUT('/api/settings', { perm: 'settings:write' }, (ctx) => {
     if (!SCHEMA[k]) continue;
     patch[k] = SCHEMA[k](v);
   }
+  if (!Object.keys(patch).length) throw bad('No recognised settings in the request (check the setting names)');
   const base = patch.base_currency ?? cur.base_currency; const currencies = patch.currencies ?? cur.currencies;
   if (patch.base_currency && patch.base_currency !== cur.base_currency && hasData()) throw bad('The reporting currency cannot be changed after orders, payments or expenses exist, because all stored exchange rates are relative to it.');
   if (!currencies.includes(base)) throw bad('The reporting currency must be in the currency list');

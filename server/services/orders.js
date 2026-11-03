@@ -189,7 +189,9 @@ export function updateOrder(id, b, user) {
     if (b.status && b.status !== cur.status) setStatus(id, b.status, {}, user);
     refreshCustomerStatus(cur.customer_id);
     audit(user, 'update', 'order', id, { total: before.total, items: before.items.map((i) => [i.description, i.qty, i.unit_price]), ...pickF(before) }, { total: after.total, ...f });
-    return getOrder(id);
+    const saved = getOrder(id);
+    if (saved.credit > 0) saved.warning = `The order total is now lower than the ${(saved.paid / 100).toFixed(2)} ${saved.currency} already paid. The difference of ${(saved.credit / 100).toFixed(2)} ${saved.currency} is customer credit: record a refund or apply it to another order.`;
+    return saved;
   });
 }
 const pickF = (o) => ({ order_date: o.order_date, expected_date: o.expected_date, discount: o.discount, additional_charges: o.additional_charges, delivery_fee: o.delivery_fee });

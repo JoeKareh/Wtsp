@@ -8,6 +8,9 @@ import { get, run, tx } from './db.js';
 import { log } from './log.js';
 
 const routes = [];
+/** Bumped after every successful write request; lets read-heavy endpoints cache safely. */
+let dataVersion = 0;
+export const getDataVersion = () => dataVersion;
 let resolveSession = () => null;
 export const setSessionResolver = (fn) => { resolveSession = fn; };
 
@@ -72,7 +75,7 @@ const sendJson = (res, status, obj, headers = {}) =>
   send(res, status, JSON.stringify(obj), { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
 
 function serveStatic(req, res, pathname) {
-  let rel = decodeURIComponent(pathname);
+  let rel; try { rel = decodeURIComponent(pathname); } catch { return send(res, 400, 'Bad request', { 'Content-Type': 'text/plain' }); }
   if (rel === '/' || !path.extname(rel)) rel = '/index.html';
   const file = path.normalize(path.join(config.publicDir, rel));
   if (!file.startsWith(config.publicDir)) return send(res, 403, 'Forbidden');
@@ -97,7 +100,8 @@ async function handle(req, res) {
     if (!m) continue;
     pathMatched = true;
     if (r.method !== req.method) continue;
-    matched = r; r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+    matched = r;
+    try { r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); }); } catch { return sendJson(res, 400, { error: 'Malformed URL' }); }
     break;
   }
   if (!matched) return sendJson(res, pathMatched ? 405 : 404, { error: pathMatched ? 'Method not allowed' : 'Not found' });
@@ -125,8 +129,9 @@ async function handle(req, res) {
       if (matched.opts.raw) ctx.rawBody = buf;
       if (buf.length) {
         if (!matched.opts.raw || (req.headers['content-type'] || '').includes('json')) {
-          const parsed = safeJson(buf.toString('utf8'), undefined);
-          if (parsed === undefined) throw new HttpError(400, 'Invalid JSON body');
+          let parsed;
+          try { parsed = JSON.parse(buf.toString('utf8')); } catch { throw new HttpError(400, 'Invalid JSON body'); }
+          if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HttpError(400, 'The request body must be a JSON object');
           ctx.body = parsed;
         }
       }
@@ -142,6 +147,7 @@ async function handle(req, res) {
     if (ctx.user && result && !result.__raw && !hasPerm(ctx.user, 'finance:read')) {
       result = result.__reply ? { ...result, json: stripFinance(result.json) } : stripFinance(result);
     }
+    if (req.method !== 'GET' && req.method !== 'HEAD') dataVersion++;
     const headers = {};
     if (ctx.setCookies.length) headers['Set-Cookie'] = ctx.setCookies;
     if (result && result.__raw) {
