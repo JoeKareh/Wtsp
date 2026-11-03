@@ -76,20 +76,21 @@ GET('/api/products/:id', { perm: 'products:read' }, (ctx) => {
   const p = getProduct(ctx.params.id); if (!p) throw notFound('Product');
   return { product: p, movements: all('SELECT m.*, u.name AS user_name FROM inventory_movements m LEFT JOIN users u ON u.id=m.user_id WHERE product_id=? ORDER BY m.id DESC LIMIT 200', p.id) };
 });
-POST('/api/products', { perm: 'products:write', idem: true }, (ctx) => {
-  const v = parseProduct(ctx.body);
-  const qty = num(ctx.body.quantity, 'Opening quantity', { min: 0 });
+export function createProduct(b, user) {
+  const v = parseProduct(b);
+  const qty = num(b.quantity, 'Opening quantity', { min: 0 });
   if (v.sku && get('SELECT id FROM products WHERE sku=?', v.sku)) throw conflict('A product with this SKU already exists');
   return tx(() => {
     const code = 'P-' + pad(nextCounter('product'), 4);
     const id = run(`INSERT INTO products(code,name,sku,barcode,category_id,description,cost,price,currency,quantity,min_stock,max_stock,supplier_id,status,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)`, code, v.name, v.sku, v.barcode, v.category_id, v.description, v.cost, v.price, v.currency, v.min_stock, v.max_stock, v.supplier_id, v.status, nowIso(), nowIso()).lastInsertRowid;
-    if (qty > 0) applyMovement({ productId: id, type: 'initial', qtyChange: qty, unitCost: v.cost, note: 'Opening stock', user: ctx.user });
-    audit(ctx.user, 'create', 'product', id, null, { code, ...v, quantity: qty });
+    if (qty > 0) applyMovement({ productId: id, type: 'initial', qtyChange: qty, unitCost: v.cost, note: 'Opening stock', user });
+    audit(user, 'create', 'product', id, null, { code, ...v, quantity: qty });
     checkStock(id);
     return getProduct(id);
   });
-});
+}
+POST('/api/products', { perm: 'products:write', idem: true }, (ctx) => createProduct(ctx.body, ctx.user));
 PUT('/api/products/:id', { perm: 'products:write' }, (ctx) => {
   const cur = get('SELECT * FROM products WHERE id=?', ctx.params.id); if (!cur) throw notFound('Product');
   const v = parseProduct(ctx.body, cur);

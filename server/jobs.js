@@ -69,6 +69,7 @@ export function startJobs() {
   every(6 * 60 * 60_000, 'lifecycle', async () => { const r = (await import('./lifecycle.js')).runLifecycle(); if (r.suspended || r.deleted || r.purged) log.info('lifecycle', r); }, { immediate: true, delay: 6000 });
   every(60 * 60_000, 'tenant-stats', async () => (await import('./admin.js')).refreshTenantStats(), { immediate: true, delay: 20_000 });
   every(10 * 60_000, 'disk-check', async () => { try { const s = fs.statfsSync(config.tenantsDir.replace(/[\\/]tenants$/, '') || '.'); const used = 100 - Math.round((s.bavail / s.blocks) * 100); if (used > 80) (await import('./platformmail.js')).alertOperator('disk', `Disk is ${used}% full`, 'Free space or grow the volume before the databases cannot write.'); } catch { /* statfs unavailable */ } }, { immediate: true, delay: 30_000 });
+  every(24 * 60 * 60_000, 'demo-reset', async () => { const d = await import('./demo.js'); if (d.demoEnabled()) d.resetDemo(); });
   every(24 * 60 * 60_000, 'weekly-digest', T('weeklydigest', async () => (await import('./services/digest.js')).sendWeeklyDigest(), { filter: (t, f) => !f.demo }));
 }
 function cleanupTenant() {

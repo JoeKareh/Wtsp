@@ -99,11 +99,16 @@ POST('/api/exchange-rates', { perm: 'settings:write' }, (ctx) => {
   return { id };
 });
 
-GET('/api/backup', { perm: 'users:manage' }, (ctx) => {
-  const dir = path.join(config.dataDir, 'tmp'); fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `backup-${Date.now()}.sqlite`);
+/** A consistent copy of the CURRENT workspace's database. In SaaS mode credentials, password hashes and sessions are removed from the copy. */
+export async function sanitizedDbCopy() {
+  const dir = path.join(config.saas ? config.tenantsDir : config.dataDir, 'tmp'); fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `export-${Date.now()}-${Math.random().toString(16).slice(2)}.sqlite`);
   db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
-  const buf = fs.readFileSync(file); fs.rmSync(file, { force: true });
+  if (config.saas) { const { DatabaseSync } = await import('node:sqlite'); const c = new DatabaseSync(file); c.exec("DELETE FROM sessions; DELETE FROM session_flags; DELETE FROM password_resets; DELETE FROM idempotency_keys; UPDATE users SET password_hash='REDACTED'; DELETE FROM business_settings WHERE key IN ('integrations_enc','wa_last_test'); VACUUM"); c.close(); }
+  const buf = fs.readFileSync(file); fs.rmSync(file, { force: true }); return buf;
+}
+GET('/api/backup', { perm: 'users:manage', lifecycle: 'always' }, async (ctx) => {
+  const buf = await sanitizedDbCopy();
   audit(ctx.user, 'backup_download', 'system', null);
   return raw(buf, 'application/octet-stream', `bizcontrol-backup-${nowIso().slice(0, 10)}.sqlite`);
 });

@@ -111,7 +111,8 @@ const TRUNK_ZERO_CC = ['961', '962', '963', '964', '965', '966', '968', '971', '
 export function normPhone(raw, cc = '') {
   let s = String(raw ?? '').trim();
   if (!s) return '';
-  s = s.replace(/[\s\-().]/g, '');
+  s = s.replace(/[\u0660-\u0669]/g, (d) => d.charCodeAt(0) - 0x660).replace(/[\u06f0-\u06f9]/g, (d) => d.charCodeAt(0) - 0x6f0);   // Arabic-Indic / Persian digits
+  s = s.replace(/[\s\-().\u200e\u200f\u202a-\u202e]/g, '');
   if (s.startsWith('00')) s = '+' + s.slice(2);
   if (!s.startsWith('+')) {
     s = s.replace(/\D/g, '');

@@ -41,9 +41,9 @@ function loadUser(id) {
   const u = get('SELECT u.*, r.name AS role, r.permissions AS role_perms FROM users u JOIN roles r ON r.id=u.role_id WHERE u.id=?', id);
   if (!u) return null;
   const perms = u.role === 'OWNER' ? ['*'] : (safeJson(u.permissions, null) ?? safeJson(u.role_perms, []));
-  return { id: u.id, name: u.name, email: u.email, role: u.role, role_id: u.role_id, active: !!u.active, permissions: perms };
+  return { id: u.id, name: u.name, email: u.email, role: u.role, role_id: u.role_id, active: !!u.active, language: u.language, permissions: perms };
 }
-const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, permissions: u.permissions.includes('*') ? ALL_PERMS : u.permissions });
+const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, language: u.language || null, permissions: u.permissions.includes('*') ? ALL_PERMS : u.permissions });
 
 // ---------- sessions ----------
 export function createSession(ctx, userId, opts = {}) {

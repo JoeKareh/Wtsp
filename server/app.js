@@ -15,6 +15,8 @@ import './services/reports.js';
 import './services/settings.js';
 import './services/clicktochat.js';
 import './billing/routes.js';
+import './services/account.js';
+import './demo.js';
 import './platform.js';
 import './admin.js';
 import { config } from './config.js';

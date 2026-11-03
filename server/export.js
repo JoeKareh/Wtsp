@@ -28,7 +28,7 @@ export function toCsv(rep) {
 const xml = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
 function colName(i) { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
 
-function zip(files) {
+export function zip(files) {
   const parts = []; const central = []; let offset = 0;
   for (const [name, data] of files) {
     const nameBuf = Buffer.from(name); const raw = Buffer.from(data); const comp = zlib.deflateRawSync(raw); const crc = zlib.crc32(raw) >>> 0;
