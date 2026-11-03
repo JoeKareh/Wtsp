@@ -1,3 +1,6 @@
+import { initLanguage, savedLang, lang as curLang } from './i18n.js';
+import { bannerHtml, refreshWorkspace, languageSelect, bindLanguage } from './saas.js';
+import './chat.js';
 import { html, raw, mount, $, $$, state, can, canAny, get, post, api, route, dispatch, parseHash, toast, fail, esc, go, readForm, fieldHtml } from './core.js';
 
 const ICONS = {
@@ -11,6 +14,8 @@ const ICONS = {
   marketing: 'M21 11.5a8.4 8.4 0 01-12.2 7.5L3 21l2-5.6A8.5 8.5 0 1121 11.5z',
   notifications: 'M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8M13.7 20a2 2 0 01-3.4 0',
   reports: 'M14 3H6v18h12V7l-4-4zM14 3v4h4M9 13h6M9 17h6',
+  billing: 'M2 7h20v12H2V7zm0 4h20M6 15h4',
+  help: 'M12 21a9 9 0 100-18 9 9 0 000 18zm0-6v-1c0-1.500 2-2 2-3.500a2 2 0 00-4 0M12 17.500v.01',
   settings: 'M12 15a3 3 0 100-6 3 3 0 000 6zm7.4-3a7.4 7.4 0 00-.1-1.3l2-1.6-2-3.4-2.4 1a7 7 0 00-2.2-1.3L14.300 3h-4l-.4 2.400a7 7 0 00-2.200 1.300l-2.400-1-2 3.400 2 1.600a7.400 7.400 0 000 2.600l-2 1.600 2 3.400 2.400-1a7 7 0 002.200 1.300l.4 2.400h4l.4-2.400a7 7 0 002.200-1.300l2.400 1 2-3.400-2-1.600c.1-.4.100-.9.100-1.300z',
 };
 const ic = (n) => raw(`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICONS[n]}"/></svg>`);
@@ -26,12 +31,15 @@ const NAV = [
   ['notifications', 'Notifications', 'notifications', () => can('notifications:read')],
   ['reports', 'Reports', 'reports', () => can('reports:read')],
   ['settings', 'Settings', 'settings', () => canAny('settings:write', 'users:manage')],
+  ['billing', 'Billing', 'billing', () => state.saas && can('users:manage')],
+  ['help', 'Help', 'help', () => true],
 ];
 const PAGES = {
   dashboard: () => import('./pages/dashboard.js'), orders: () => import('./pages/orders.js'), customers: () => import('./pages/customers.js'),
   products: () => import('./pages/products.js'), payments: () => import('./pages/payments.js'), expenses: () => import('./pages/expenses.js'),
   analytics: () => import('./pages/analytics.js'), marketing: () => import('./pages/marketing.js'), notifications: () => import('./pages/notifications.js'),
   reports: () => import('./pages/reports.js'), settings: () => import('./pages/settings.js'),
+  billing: () => import('./pages/billing.js'), help: () => import('./pages/help.js'), 'whatsapp-setup': () => import('./pages/whatsapp-setup.js'), 'get-started': () => import('./pages/onboarding.js'),
 };
 // every page enforces its permission, not just the menu (the server enforces it again on every API call)
 for (const [k, loader] of Object.entries(PAGES)) route('/' + k, async (view, q) => {
@@ -54,7 +62,8 @@ function loginView(status) {
       <div class="field"><label for="pw">Password</label><input id="pw" type="password" required autocomplete="current-password"></div>
       <div class="alert bad" id="err" hidden></div>
       <button class="btn primary" style="width:100%;justify-content:center">Sign in</button>
-      <p class="small" style="text-align:center;margin-top:14px"><a href="#/forgot">Forgot your password?</a></p></form>`);
+      <p class="small" style="text-align:center;margin-top:14px"><a href="#/forgot">Forgot your password?</a></p><p style="text-align:center">${languageSelect()}</p></form>`);
+  bindLanguage();
   $('#f').onsubmit = async (e) => {
     e.preventDefault(); const btn = $('button', e.target); btn.disabled = true;
     try { state.user = await post('/api/auth/login', { email: $('#email').value, password: $('#pw').value }); await startApp(); }
@@ -94,15 +103,17 @@ async function refreshUnread() {
 }
 
 async function startApp() {
-  await loadBoot();
+  if (state.user.language && state.user.language !== curLang) await initLanguage(state.user.language);
+  state.saas ??= state.boot?.settings?.saas; await loadBoot(); try { const st = await get('/api/auth/status'); state.saas = st.saas; state.workspace = st.workspace; state.support = st.support_session; } catch { /* ignore */ }
   const s = state.boot.settings;
   const items = NAV.filter(([, , , ok]) => ok());
   mount(app, html`<div class="shell">
     <aside class="sidebar" id="sidebar" aria-label="Main navigation"><div class="brand">${s.logo ? raw(`<img alt="" src="${esc(s.logo)}">`) : html`<span class="logo">B</span>`}<span>${s.business_name}</span></div>
       <nav class="nav">${items.map(([k, label, icon]) => html`<a href="#/${k}" data-nav="${k}">${ic(icon)}<span>${label}</span>${k === 'notifications' ? html`<span class="count" id="nav-count" hidden></span>` : ''}</a>`)}</nav>
       <div class="side-foot"><div style="color:#fff;font-weight:600">${state.user.name}</div><div>${state.user.role.charAt(0) + state.user.role.slice(1).toLowerCase()} · <a href="#" id="logout" style="color:var(--nav-text);text-decoration:underline">Sign out</a></div></div></aside>
-    <div class="main">${s.is_demo ? html`<div class="demo-banner">DEMO DATA: this is a demonstration database, not real business data</div>` : ''}
+    <div class="main"><div id="ws-banner">${bannerHtml()}</div>${s.is_demo ? html`<div class="demo-banner">DEMO DATA: this is a demonstration database, not real business data</div>` : ''}
       <header class="topbar"><button class="btn ghost menu-btn" id="menu" aria-label="Open menu">☰</button><div class="grow" id="crumb"></div>
+        ${languageSelect()}
         <a class="btn ghost" href="#/notifications" aria-label="Notifications" style="position:relative">${ic('notifications')}<span class="badge bad" id="bell-count" hidden style="position:absolute;top:-4px;right:-6px;padding:0 6px"></span></a>
         <button class="btn ghost" id="theme" aria-label="Toggle dark mode" title="Toggle light/dark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg></button>
         <button class="btn ghost" id="pwbtn" title="Account">${state.user.name.split(' ')[0]}</button></header>
@@ -110,7 +121,7 @@ async function startApp() {
   $('#logout').onclick = async (e) => { e.preventDefault(); try { await post('/api/auth/logout'); } catch { /* */ } state.user = null; location.hash = '#/login'; boot(); };
   $('#menu').onclick = () => $('#sidebar').classList.toggle('open');
   $('#theme').onclick = () => { const cur = document.documentElement.dataset.theme || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light'); const n = cur === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = n; try { localStorage.setItem('theme', n); } catch { /* */ } dispatch($('#view')); };
-  $('#pwbtn').onclick = accountDialog;
+  $('#pwbtn').onclick = accountDialog; bindLanguage();
   $('#sidebar').addEventListener('click', (e) => { if (e.target.closest('a')) $('#sidebar').classList.remove('open'); });
   clearInterval(navTimer); navTimer = setInterval(refreshUnread, 60000); refreshUnread();
   await render();
@@ -138,6 +149,8 @@ async function boot() {
   applyTheme();
   let status;
   try { status = await get('/api/auth/status'); } catch (e) { mount(app, html`<div class="auth"><div class="card"><h1>Cannot reach server</h1><p>${e.message}</p><button class="btn" data-reload>Retry</button></div></div>`); return; }
+  state.saas = status.saas; state.workspace = status.workspace; state.support = status.support_session;
+  await initLanguage(status.user?.language || savedLang() || status.language);
   const { path, query } = parseHash();
   if (status.needs_setup) return setupView();
   if (!status.user) {

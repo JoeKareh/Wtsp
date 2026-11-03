@@ -1,11 +1,13 @@
 import { html, raw, mount, $, $$, state, can, get, post, put, del, qs, money, baseMoney, num, fdate, fdt, badge, toast, fail, modal, formModal, confirmDialog, table, setQuery, debounce, download } from '../core.js';
+import { chatBtn } from '../chat.js'; import { importDialog } from './import.js';
 import { drawBars } from '../charts.js';
 
 export default async function (view, q) {
   q.tab ||= 'products';
   const meta = await get('/api/products/meta'); const w = can('products:write'); const fin = can('finance:read');
-  mount(view, html`<div class="page-head"><div class="grow"><h1>Products & Inventory</h1><p>Stock levels update automatically as orders move through your workflow (rule: deduct at <b>${state.boot.settings.stock_deduction}</b>).</p></div>${w ? html`<button class="btn primary" id="new">+ New product</button>` : ''}</div>
+  mount(view, html`<div class="page-head"><div class="grow"><h1>Products & Inventory</h1><p>Stock levels update automatically as orders move through your workflow (rule: deduct at <b>${state.boot.settings.stock_deduction}</b>).</p></div>${w ? html`<button class="btn" id="imp">Import</button> <button class="btn primary" id="new">+ New product</button>` : ''}</div>
     <div id="summary"></div><div class="tabs" id="tabs"><button data-t="products">Products</button><button data-t="movements">Stock movements</button>${w ? html`<button data-t="setup">Categories & suppliers</button>` : ''}</div><div id="body"></div>`);
+  $('#imp', view)?.addEventListener('click', () => importDialog('products', load));
   $('#new', view)?.addEventListener('click', () => productForm(null, meta, load));
   $('#tabs', view).onclick = (e) => { if (e.target.dataset.t) { q.tab = e.target.dataset.t; load(); } };
   async function load() {
@@ -30,7 +32,7 @@ export default async function (view, q) {
         { label: 'Cover', class: 'right', render: (p) => { const i = info.get(p.id); return i?.days_cover != null ? html`<span class="${i.shortage_risk ? 'bad' : ''}">${i.days_cover}d</span>` : '–'; } },
         ...(fin ? [{ label: 'Cost', class: 'right mono', render: (p) => money(p.cost, p.currency) }] : []), { label: 'Price', class: 'right mono', render: (p) => money(p.price, p.currency) },
         ...(fin ? [{ label: 'Margin', class: 'right', render: (p) => (p.margin_pct != null ? p.margin_pct + '%' : '–') }] : []),
-        { label: '', render: (p) => (w ? html`<button class="btn sm" data-stock="${p.id}">Stock</button> <button class="btn sm ghost" data-edit="${p.id}">Edit</button>` : '') },
+        { label: '', render: (p) => (w ? html`${p.supplier_id && (p.stock_state === 'out' || p.stock_state === 'low') ? chatBtn({ supplier: p.supplier_id, product: p.id, purpose: 'reorder' }, 'Reorder', 'btn sm') : ''} <button class="btn sm" data-stock="${p.id}">Stock</button> <button class="btn sm ghost" data-edit="${p.id}">Edit</button>` : '') },
       ], r.rows, { empty: 'No products', emptyHint: 'Add your first product with “New product”.', rowClass: (p) => (p.stock_state === 'out' ? 'row-bad' : p.stock_state === 'low' ? 'row-warn' : '') }));
       $('#tbl', body).onclick = async (e) => {
         const st = e.target.closest('[data-stock]'); const ed = e.target.closest('[data-edit]'); const id = Number((st || ed)?.dataset.stock || (st || ed)?.dataset.edit); if (!id) return;
@@ -51,7 +53,7 @@ export default async function (view, q) {
     const draw = async () => {
       const m2 = await get('/api/products/meta'); meta.categories = m2.categories; meta.suppliers = m2.suppliers;
       mount($('#cats', body), html`${m2.categories.length ? m2.categories.map((c) => html`<div style="display:flex;gap:6px;padding:4px 0"><span style="flex:1">${c.name}</span><button class="btn sm ghost" data-rc="${c.id}">Rename</button><button class="btn sm ghost danger" data-dc="${c.id}">✕</button></div>`) : html`<p class="muted">No categories yet.</p>`}`);
-      mount($('#sups', body), html`${m2.suppliers.length ? m2.suppliers.map((c) => html`<div style="display:flex;gap:6px;padding:4px 0"><span style="flex:1">${c.name} <span class="muted small">${c.phone}</span></span><button class="btn sm ghost" data-es="${c.id}">Edit</button><button class="btn sm ghost danger" data-ds="${c.id}">✕</button></div>`) : html`<p class="muted">No suppliers yet.</p>`}`);
+      mount($('#sups', body), html`${m2.suppliers.length ? m2.suppliers.map((c) => html`<div style="display:flex;gap:6px;padding:4px 0"><span style="flex:1">${c.name} <span class="muted small">${c.phone}</span></span>${c.phone ? chatBtn({ supplier: c.id, purpose: 'reorder' }, 'Reorder', 'btn sm ghost') : ''}<button class="btn sm ghost" data-es="${c.id}">Edit</button><button class="btn sm ghost danger" data-ds="${c.id}">✕</button></div>`) : html`<p class="muted">No suppliers yet.</p>`}`);
     };
     await draw();
     $('#addcat', body).onclick = () => formModal({ title: 'New category', fields: [{ name: 'name', label: 'Name', required: true }], onSubmit: async (v) => { await post('/api/product-categories', v); draw(); } });

@@ -278,7 +278,7 @@ GET('/api/orders', { perm: 'orders:read' }, (ctx) => {
 });
 GET('/api/orders/pending', { perm: 'orders:read' }, () => {
   const today = todayStr(allSettings().timezone);
-  const base = `SELECT f.id, f.number, f.order_date, f.expected_date, f.status, f.currency, f.total, f.balance, f.payment_status, c.name AS customer_name, c.phone AS customer_phone,
+  const base = `SELECT f.id, f.customer_id, f.number, f.order_date, f.expected_date, f.status, f.currency, f.total, f.balance, f.payment_status, c.name AS customer_name, c.phone AS customer_phone,
      CASE WHEN f.expected_date IS NOT NULL AND f.expected_date < '${today}' THEN CAST(julianday('${today}') - julianday(f.expected_date) AS INTEGER) ELSE 0 END AS days_late,
      CAST((julianday('${today}') - julianday(f.order_date)) AS INTEGER) AS age_days
      FROM v_orders_fin f JOIN customers c ON c.id=f.customer_id`;

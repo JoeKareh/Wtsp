@@ -1,4 +1,5 @@
 import { html, raw, mount, $, $$, state, can, get, post, put, qs, money, baseMoney, num, pct, fdate, fdt, badge, toast, fail, modal, formModal, confirmDialog, table, pager, setQuery, debounce, toCents, fromCents, idemKey, today, rangeControl, bindRange, download, esc } from '../core.js';
+import { chatBtn } from '../chat.js';
 import { customerPicker } from '../pickers.js';
 import { drawBars } from '../charts.js';
 
@@ -37,7 +38,7 @@ export default async function (view, q) {
     mount(body, html`<div class="kpis"><div class="kpi"><div class="l">Total outstanding</div><div class="v bad">${baseMoney(t.total)}</div></div><div class="kpi"><div class="l">0–30 days</div><div class="v">${baseMoney(t.current)}</div></div><div class="kpi"><div class="l">31–60 days</div><div class="v">${baseMoney(t.d31_60)}</div></div><div class="kpi"><div class="l">61–90 days</div><div class="v warn">${baseMoney(t.d61_90)}</div></div><div class="kpi"><div class="l">Over 90 days</div><div class="v bad">${baseMoney(t.d90)}</div></div></div>
       <p class="small muted">Age is measured from the order date. Amounts in ${r.reporting_currency}. Cancelled, returned and draft orders never appear here.</p>
       <div class="card flush">${table([{ label: 'Customer', render: (c) => html`<b>${c.name}</b><div class="muted small">${c.phone}</div>` }, { label: 'Open orders', class: 'right', render: (c) => c.orders }, { label: 'Oldest', render: (c) => fdate(c.oldest) }, { label: '0–30', class: 'right mono', render: (c) => (c.current ? baseMoney(c.current) : '') }, { label: '31–60', class: 'right mono', render: (c) => (c.d31_60 ? baseMoney(c.d31_60) : '') }, { label: '61–90', class: 'right mono', render: (c) => (c.d61_90 ? baseMoney(c.d61_90) : '') }, { label: '90+', class: 'right mono', render: (c) => (c.d90 ? html`<b class="bad">${baseMoney(c.d90)}</b>` : '') }, { label: 'Total', class: 'right mono', render: (c) => html`<b>${baseMoney(c.total)}</b>` },
-        { label: '', render: (c) => (can('payments:write') ? html`<button class="btn sm primary" data-pay="${c.customer_id}">Collect</button>` : '') }], r.customers, { rowAttr: true, empty: 'Nobody owes you anything 🎉' })}</div>`);
+        { label: '', render: (c) => html`${chatBtn({ customer: c.customer_id, purpose: 'payment_reminder' }, 'Remind', 'btn sm')} ${can('payments:write') ? html`<button class="btn sm primary" data-pay="${c.customer_id}">Collect</button>` : ''}` }], r.customers, { rowAttr: true, empty: 'Nobody owes you anything 🎉' })}</div>`);
     body.onclick = (e) => { const b = e.target.closest('[data-pay]'); if (b) { e.stopPropagation(); const c = r.customers.find((x) => x.customer_id == b.dataset.pay); return paymentForm({ customer: { id: c.customer_id, name: c.name, phone: c.phone } }, load); } const tr = e.target.closest('tr[data-row]'); if (tr) location.hash = `#/customers?open=${r.customers[Number(tr.dataset.row)].customer_id}`; };
   }
 

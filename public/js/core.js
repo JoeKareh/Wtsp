@@ -37,7 +37,7 @@ export const put = (u, b = {}) => api('PUT', u, b);
 export const del = (u) => api('DELETE', u);
 export const qs = (o) => { const p = new URLSearchParams(); for (const [k, v] of Object.entries(o)) if (v !== '' && v != null && v !== false) p.set(k, v === true ? '1' : v); const s = p.toString(); return s ? '?' + s : ''; };
 /** One key per form-open: resubmitting the same dialog can never create a duplicate financial record. */
-export const idemKey = () => crypto.randomUUID();
+export const idemKey = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));   // randomUUID needs a secure context
 
 // ---------- formatting (all money is integer minor units) ----------
 const base = () => state.boot?.settings.base_currency || 'USD';

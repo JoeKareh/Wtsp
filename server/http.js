@@ -60,7 +60,10 @@ const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'same-origin',
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  // Card checkout (Paddle) is only allowed when it is configured. Exact Paddle hosts are confirmed in the sandbox step (docs/LAUNCH_GUIDE.md).
+  'Content-Security-Policy': process.env.PADDLE_CLIENT_TOKEN
+    ? "default-src 'self'; img-src 'self' data: blob: https://*.paddle.com; style-src 'self' 'unsafe-inline' https://*.paddle.com; script-src 'self' https://cdn.paddle.com; connect-src 'self' https://*.paddle.com; frame-src https://*.paddle.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    : "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 
 function readBody(req, limit = 12 * 1024 * 1024) {

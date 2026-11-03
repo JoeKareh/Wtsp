@@ -1,4 +1,5 @@
 import { html, raw, mount, $, $$, state, can, get, post, put, del, qs, money, baseMoney, num, fdate, fdt, badge, toast, fail, esc, modal, formModal, confirmDialog, table, pager, setQuery, debounce, toCents, fromCents, idemKey, today, statusLabel, go, download } from '../core.js';
+import { chatBtn } from '../chat.js';
 import { customerPicker } from '../pickers.js';
 
 const OPEN = ['Pending', 'Confirmed', 'Processing', 'Ready', 'Out for delivery'];
@@ -62,6 +63,7 @@ export default async function (view, q) {
         { label: 'Placed', render: (o) => html`${fdate(o.order_date)}<div class="muted small">${o.age_days}d ago</div>` },
         { label: 'Expected', render: (o) => (o.expected_date ? html`${fdate(o.expected_date)}${o.days_late ? html` <span class="badge bad">${o.days_late}d late</span>` : ''}` : '–') },
         { label: 'Total', class: 'right mono', render: (o) => money(o.total, o.currency) }, { label: 'Balance', class: 'right mono', render: (o) => (o.balance > 0 ? html`<b class="bad">${money(o.balance, o.currency)}</b>` : '–') }, { label: 'Status', render: (o) => badge(o.status) },
+        { label: '', render: (o) => chatBtn({ customer: o.customer_id, order: o.id, purpose: o.balance > 0 ? 'payment_reminder' : 'delivery_update' }, '', 'btn sm ghost') },
       ], G[key], { rowAttr: true, rowClass: (o) => (o.days_late ? 'row-bad' : ''), empty: 'Nothing here 🎉' })}</div>`;
     mount(body, html`<div class="kpis">${[['awaiting_confirmation', 'Awaiting confirmation'], ['processing', 'Being processed'], ['awaiting_delivery', 'Awaiting delivery'], ['overdue', 'Overdue'], ['unpaid', 'With unpaid balance']].map(([k, l]) => html`<div class="kpi"><div class="l">${l}</div><div class="v ${k === 'overdue' && r.counts[k] ? 'bad' : ''}">${r.counts[k]}</div></div>`)}</div>
       ${sec('overdue', 'Overdue & delayed', 'Past the expected delivery date')}${sec('awaiting_confirmation', 'Waiting for confirmation', 'Status Pending')}${sec('processing', 'Being processed', 'Confirmed or processing')}${sec('awaiting_delivery', 'Awaiting delivery', 'Ready or out for delivery')}${sec('unpaid', 'Unpaid balances', 'Delivered or in progress, not fully paid')}`);
@@ -86,6 +88,7 @@ export async function openOrder(id, onChange = () => {}) {
         ${!locked ? html`<button class="btn sm" data-act="edit">Edit</button>` : ''}<button class="btn sm" data-act="dup">Duplicate</button>
         ${!locked && can('payments:write') && o.status !== 'Draft' && o.balance > 0 ? html`<button class="btn sm primary" data-act="pay">Record payment</button>` : ''}
         ${o.credit > 0 && can('payments:write') ? html`<button class="btn sm" data-act="refund">Record refund</button>` : ''}
+        ${chatBtn({ customer: o.customer_id, order: o.id, purpose: o.balance > 0 && o.status !== 'Draft' ? 'payment_reminder' : o.status === 'Delivered' || o.status === 'Completed' ? 'thank_you' : 'order_confirmation' })}
         ${can('marketing:write') ? html`<button class="btn sm" data-act="wa">WhatsApp…</button>` : ''}
         ${!locked && o.status !== 'Draft' ? html`<button class="btn sm danger" data-act="cancel">Cancel order</button>` : ''}${o.status === 'Draft' ? html`<button class="btn sm danger" data-act="delete">Delete draft</button>` : ''}</div>` : ''}
       <div class="grid g2" style="margin-bottom:14px"><div><b>${o.customer_name}</b> <a href="#/customers?open=${o.customer_id}" class="small">view profile</a><div class="muted">${o.customer_phone}</div>

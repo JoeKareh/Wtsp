@@ -4,7 +4,8 @@ import { analyticsQuery, kpiCards, bindKpiInfo, revenueChart, profitChart, order
 export default async function (view, q) {
   q.range ||= 'this_month'; q.compare ||= 'prev';
   mount(view, html`<div class="page-head"><div class="grow"><h1>Dashboard</h1><p>How the business is doing, at a glance. Click any number to see the records behind it.</p></div>
-    <div class="toolbar" id="rc">${rangeControl(q, { compare: true })}</div></div><div id="body"><div class="loading">Loading…</div></div>`);
+    <div class="toolbar" id="rc">${rangeControl(q, { compare: true })}</div></div><div id="onb"></div><div id="body"><div class="loading">Loading…</div></div>`);
+  import('./onboarding.js').then((m) => m.dashboardCard($('#onb', view)));
   const load = async () => {
     setQuery(q); const body = $('#body', view);
     try {
