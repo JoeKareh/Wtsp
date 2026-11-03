@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { GET, POST, PUT, DELETE, raw } from '../http.js';
-import { all, get, run, tx, audit, allSettings, nextCounter, fxRate } from '../db.js';
+import { all, get, run, tx, audit, allSettings, nextCounter, fxRate, uploadsDir } from '../db.js';
 import { bad, notFound, str, money, oneOf, date, nowIso, todayStr, pad, escLike, addDays, addMonths } from '../util.js';
 import { config } from '../config.js';
 import { notify, avgAmountBase } from './notifications.js';
@@ -36,9 +36,9 @@ function saveAttachment(id, att) {
   if (!ALLOWED_EXT[ext]) throw bad('Attachment must be a PDF, PNG, JPG or WEBP file');
   const buf = Buffer.from(att.data_base64, 'base64');
   if (!buf.length || buf.length > 5 * 1024 * 1024) throw bad('Attachment must be smaller than 5 MB');
-  fs.mkdirSync(config.uploadsDir, { recursive: true });
+  fs.mkdirSync(uploadsDir(), { recursive: true });
   const file = `expense-${id}-${crypto.randomBytes(6).toString('hex')}${ext}`;
-  fs.writeFileSync(path.join(config.uploadsDir, file), buf);
+  fs.writeFileSync(path.join(uploadsDir(), file), buf);
   return { path: file, name: String(att.name).slice(0, 120) };
 }
 
@@ -124,7 +124,7 @@ DELETE('/api/expenses/:id', { perm: 'expenses:write' }, (ctx) => {
 GET('/api/expenses/:id/attachment', { perm: 'expenses:read' }, (ctx) => {
   const e = get('SELECT attachment_path, attachment_name FROM expenses WHERE id=?', ctx.params.id);
   if (!e?.attachment_path) throw notFound('Attachment');
-  const file = path.join(config.uploadsDir, path.basename(e.attachment_path));
+  const file = path.join(uploadsDir(), path.basename(e.attachment_path));
   if (!fs.existsSync(file)) throw notFound('Attachment file');
   return raw(fs.readFileSync(file), ALLOWED_EXT[path.extname(file)] || 'application/octet-stream', e.attachment_name);
 });

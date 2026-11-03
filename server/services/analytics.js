@@ -1,5 +1,5 @@
 import { GET, getDataVersion } from '../http.js';
-import { all, get, allSettings, recognizedSql, recDateSql } from '../db.js';
+import { all, get, allSettings, recognizedSql, recDateSql, tenantKey } from '../db.js';
 import { resolveRange, compareRange, todayStr, diffDays, addDays, mondayOf, addMonths, startOfMonth, endOfMonth, pct } from '../util.js';
 import { periodFinancials, receivablesNow, fxSnapshot } from './finance.js';
 
@@ -136,7 +136,8 @@ export function analytics(q) {
 // The dashboard is the heaviest read. Cache per query; any write request (or 30 s, for background jobs) invalidates it.
 const cache = new Map();
 export function cachedAnalytics(q) {
-  const key = JSON.stringify([q.range, q.from, q.to, q.compare]); const hit = cache.get(key); const v = getDataVersion();
+  // the tenant is part of the key: a cached dashboard is never shared between tenants
+  const key = JSON.stringify([tenantKey(), q.range, q.from, q.to, q.compare]); const hit = cache.get(key); const v = getDataVersion();
   if (hit && hit.v === v && Date.now() - hit.at < 30000) return hit.data;
   const data = analytics(q); if (cache.size > 50) cache.clear(); cache.set(key, { v, at: Date.now(), data }); return data;
 }

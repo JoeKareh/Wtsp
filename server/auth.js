@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { GET, POST, PUT, DELETE, setSessionResolver, parseCookies, isHttps, reply } from './http.js';
-import { all, get, run, tx, audit, allSettings, setSettings } from './db.js';
+import { all, get, run, tx, audit, allSettings, setSettings, tenantKey, currentTenantContext } from './db.js';
+import { workspaceInfo } from './lifecycle.js';
 import { HttpError, bad, notFound, str, email as vEmail, nowIso, sha256, safeJson } from './util.js';
 import { DEFAULT_ROLES, ALL_PERMS, PERMISSIONS, hasPerm } from './perms.js';
 import { queueEmail, flushOutbox } from './mail.js';
@@ -22,7 +23,7 @@ export function verifyPassword(pw, stored) {
   const exp = Buffer.from(hashHex, 'hex');
   return exp.length === h.length && crypto.timingSafeEqual(exp, h);
 }
-function checkPassword(pw) {
+export function checkPassword(pw) {
   if (typeof pw !== 'string' || pw.length < 8) throw bad('Password must be at least 8 characters');
   if (pw.length > 200) throw bad('Password too long');
   if (/^(password|12345678|qwerty123)/i.test(pw)) throw bad('That password is too easy to guess');
@@ -44,28 +45,33 @@ function loadUser(id) {
 const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, permissions: u.permissions.includes('*') ? ALL_PERMS : u.permissions });
 
 // ---------- sessions ----------
-function createSession(ctx, userId) {
+export function createSession(ctx, userId, opts = {}) {
   const token = crypto.randomBytes(32).toString('hex');
   const exp = new Date(Date.now() + SESSION_DAYS * 864e5).toISOString();
-  run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?)', sha256(token), userId, nowIso(), exp, nowIso(), ctx.ip, String(ctx.req.headers['user-agent'] || '').slice(0, 200));
+  run('INSERT INTO sessions VALUES (?,?,?,?,?,?,?)', sha256(token), userId, nowIso(), opts.expires || exp, nowIso(), ctx.ip, String(ctx.req.headers['user-agent'] || '').slice(0, 200));
+  if (opts.impersonator || opts.readonly) run('INSERT INTO session_flags(session_id,impersonator,readonly) VALUES (?,?,?)', sha256(token), opts.impersonator || null, opts.readonly ? 1 : 0);
   setCookie(ctx, token, SESSION_DAYS * 86400);
 }
+// Over HTTPS the cookie uses the __Host- prefix: browsers then guarantee it is host-only (no Domain), Secure and Path=/,
+// so a sibling subdomain can never set or overwrite another workspace's session cookie ("cookie tossing").
+const cookieName = (req) => (isHttps(req) ? '__Host-sid' : 'sid');
+const readSid = (req) => { const c = parseCookies(req.headers.cookie); return c['__Host-sid'] || c.sid; };
 function setCookie(ctx, token, maxAge) {
-  ctx.setCookies.push(`sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${isHttps(ctx.req) ? '; Secure' : ''}`);
+  ctx.setCookies.push(`${cookieName(ctx.req)}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${isHttps(ctx.req) ? '; Secure' : ''}`);
 }
 setSessionResolver((req) => {
-  const token = parseCookies(req.headers.cookie).sid;
+  const token = readSid(req);
   if (!token) return null;
   const id = sha256(token);
-  const s = get('SELECT * FROM sessions WHERE id=?', id);
+  const s = get('SELECT s.*, f.impersonator, COALESCE(f.readonly,0) AS readonly FROM sessions s LEFT JOIN session_flags f ON f.session_id=s.id WHERE s.id=?', id);
   if (!s) return null;
   if (s.expires_at < nowIso()) { run('DELETE FROM sessions WHERE id=?', id); return null; }
   const user = loadUser(s.user_id);
   if (!user || !user.active) return null;
-  if (Date.now() - Date.parse(s.last_seen) > 300000) {
+  if (Date.now() - Date.parse(s.last_seen) > 300000 && !s.impersonator) {
     run('UPDATE sessions SET last_seen=?, expires_at=? WHERE id=?', nowIso(), new Date(Date.now() + SESSION_DAYS * 864e5).toISOString(), id);
   }
-  return { user, session: { id, sid_hash: id } };
+  return { user, session: { id, sid_hash: id, readonly: !!s.readonly, impersonator: s.impersonator || null } };
 });
 
 // ---------- login throttling ----------
@@ -80,13 +86,15 @@ const failed = (key) => attempts.set(key, [...(attempts.get(key) || []), Date.no
 const userCount = () => get('SELECT COUNT(*) c FROM users').c;
 
 // ---------- routes ----------
-GET('/api/auth/status', { perm: 'public' }, (ctx) => {
-  const s = (() => { try { const tok = parseCookies(ctx.req.headers.cookie).sid; if (!tok) return null; const row = get('SELECT user_id, expires_at FROM sessions WHERE id=?', sha256(tok)); return row && row.expires_at > nowIso() ? loadUser(row.user_id) : null; } catch { return null; } })();
+GET('/api/auth/status', { perm: 'public', lifecycle: 'status' }, (ctx) => {
+  const s = (() => { try { const tok = readSid(ctx.req); if (!tok) return null; const row = get('SELECT user_id, expires_at FROM sessions WHERE id=?', sha256(tok)); return row && row.expires_at > nowIso() ? loadUser(row.user_id) : null; } catch { return null; } })();
   const st = allSettings();
-  return { needs_setup: userCount() === 0, user: s && s.active ? publicUser(s) : null, business_name: st.business_name, is_demo: st.is_demo };
+  const ws = workspaceInfo(currentTenantContext()?.tenant); const sess = (() => { try { const tok = readSid(ctx.req); return tok ? get('SELECT impersonator, readonly FROM session_flags WHERE session_id=?', sha256(tok)) : null; } catch { return null; } })();
+  return { needs_setup: config.saas ? false : userCount() === 0, user: s && s.active ? publicUser(s) : null, business_name: st.business_name, is_demo: st.is_demo, language: st.language, workspace: ws, support_session: sess ? { by: sess.impersonator, readonly: !!sess.readonly } : null, saas: config.saas };
 });
 
 POST('/api/auth/setup', { perm: 'public' }, (ctx) => {
+  if (config.saas) throw new HttpError(403, 'Workspaces are created by signing up');
   if (userCount() > 0) throw new HttpError(403, 'Setup already completed');
   const { name, email, password, business_name } = ctx.body;
   const e = vEmail(email, 'Email', { required: true }); const n = str(name, 'Name', { required: true, max: 100 });
@@ -102,9 +110,9 @@ POST('/api/auth/setup', { perm: 'public' }, (ctx) => {
   return publicUser(loadUser(id));
 });
 
-POST('/api/auth/login', { perm: 'public' }, (ctx) => {
+POST('/api/auth/login', { perm: 'public', lifecycle: 'always' }, (ctx) => {
   const e = String(ctx.body.email || '').trim().toLowerCase(); const pw = String(ctx.body.password || '');
-  const key = ctx.ip + '|' + e; throttle(key);
+  const key = tenantKey() + '|' + ctx.ip + '|' + e; throttle(key);
   const u = get('SELECT * FROM users WHERE email=?', e);
   // run a hash either way to keep timing similar
   const ok = u ? verifyPassword(pw, u.password_hash) : (verifyPassword(pw, 'scrypt$00$00'), false);
@@ -116,15 +124,15 @@ POST('/api/auth/login', { perm: 'public' }, (ctx) => {
   return publicUser(loadUser(u.id));
 });
 
-POST('/api/auth/logout', {}, (ctx) => {
+POST('/api/auth/logout', { lifecycle: 'always' }, (ctx) => {
   run('DELETE FROM sessions WHERE id=?', ctx.session.id);
   setCookie(ctx, '', 0);
   audit(ctx.user, 'logout', 'user', ctx.user.id);
   return { ok: true };
 });
-GET('/api/auth/me', {}, (ctx) => publicUser(ctx.user));
+GET('/api/auth/me', { lifecycle: 'always' }, (ctx) => publicUser(ctx.user));
 
-POST('/api/auth/change-password', {}, (ctx) => {
+POST('/api/auth/change-password', { lifecycle: 'always' }, (ctx) => {
   const u = get('SELECT * FROM users WHERE id=?', ctx.user.id);
   if (!verifyPassword(String(ctx.body.current_password || ''), u.password_hash)) throw bad('Current password is incorrect');
   checkPassword(ctx.body.new_password);
@@ -149,9 +157,10 @@ DELETE('/api/auth/sessions/:id', {}, (ctx) => {
 function issueReset(userId) {
   const token = crypto.randomBytes(32).toString('hex');
   run('INSERT INTO password_resets VALUES (?,?,?,NULL)', sha256(token), userId, new Date(Date.now() + 3600e3).toISOString());
-  return `${config.baseUrl}/#/reset?token=${token}`;
+  const base = config.saas ? config.tenantUrl(currentTenantContext().tenant.subdomain) : config.baseUrl;
+  return `${base}/#/reset?token=${token}`;
 }
-POST('/api/auth/forgot', { perm: 'public' }, (ctx) => {
+POST('/api/auth/forgot', { perm: 'public', lifecycle: 'always' }, (ctx) => {
   const e = String(ctx.body.email || '').trim().toLowerCase(); throttle('forgot|' + ctx.ip); failed('forgot|' + ctx.ip);
   const u = get('SELECT * FROM users WHERE email=? AND active=1', e);
   if (u) {
@@ -162,7 +171,7 @@ POST('/api/auth/forgot', { perm: 'public' }, (ctx) => {
   }
   return { ok: true, message: 'If that email exists, a reset link has been sent.' };
 });
-POST('/api/auth/reset', { perm: 'public' }, (ctx) => {
+POST('/api/auth/reset', { perm: 'public', lifecycle: 'always' }, (ctx) => {
   const t = get('SELECT * FROM password_resets WHERE token_hash=?', sha256(String(ctx.body.token || '')));
   if (!t || t.used_at || t.expires_at < nowIso()) throw bad('This reset link is invalid or has expired');
   checkPassword(ctx.body.password);

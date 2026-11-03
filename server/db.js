@@ -1,31 +1,96 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { DatabaseSync } from 'node:sqlite';
 import { config } from './config.js';
 import { nowIso, safeJson } from './util.js';
 
-fs.mkdirSync(config.dataDir, { recursive: true });
-export const db = new DatabaseSync(config.dbPath);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
+/**
+ * Tenant-aware database access.
+ *  - In SaaS mode (APP_DOMAIN set) every call resolves the current tenant from AsyncLocalStorage and FAILS CLOSED when
+ *    there is none, so code running outside a tenant context can never touch a tenant file by accident.
+ *  - Without APP_DOMAIN (single-business mode) everything uses DB_PATH, exactly like before.
+ * Services keep importing all/get/run/tx/... unchanged.
+ */
+export const als = new AsyncLocalStorage();
+export class TenantUnavailable extends Error { constructor(msg, status = 503) { super(msg); this.status = status; this.tenantUnavailable = true; } }
+
+const DEFAULT_KEY = 'default';
+const pool = new Map();            // key -> connection record; Map order doubles as LRU order
+const openHooks = [];              // run (inside the tenant context) every time a tenant database is opened
+const failureHooks = [];
+export const onTenantOpen = (fn) => openHooks.push(fn);
+export const onMigrationFailure = (fn) => failureHooks.push(fn);
+const failed = new Map();          // key -> error message; a tenant whose migration failed stays disabled until fixed
+
+export const tenantKey = () => {
+  const st = als.getStore();
+  if (st?.tenantId) return st.tenantId;
+  if (config.saas) throw new TenantUnavailable('No tenant context', 500);
+  return DEFAULT_KEY;
+};
+export const currentTenantContext = () => als.getStore() || null;
+export const withTenant = (tenantId, fn) => als.run({ ...(als.getStore() || {}), tenantId }, fn);
+export function tenantFile(id) {
+  if (id === DEFAULT_KEY && !config.saas) return config.dbPath;
+  if (!/^t_[a-f0-9]{16}$/.test(id)) throw new Error('Invalid tenant id');   // ids are generated, never user-supplied: no path tricks
+  return path.join(config.tenantsDir, id + '.sqlite');
+}
+
+function openConn(key) {
+  if (failed.has(key)) throw new TenantUnavailable('This workspace is temporarily unavailable (maintenance).');
+  const file = tenantFile(key); fs.mkdirSync(path.dirname(file), { recursive: true });
+  const raw = new DatabaseSync(file);
+  raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
+  const c = { key, db: raw, depth: 0, cache: null, lastUsed: Date.now(), closed: false };
+  pool.set(key, c);
+  try {
+    als.run({ tenantId: key, opening: true }, () => { migrate(c); for (const h of openHooks) h(key); });
+  } catch (e) {
+    pool.delete(key); try { raw.close(); } catch { /* ignore */ }
+    if (config.saas) { failed.set(key, e.message); for (const h of failureHooks) { try { h(key, e); } catch { /* ignore */ } } throw new TenantUnavailable('This workspace is temporarily unavailable (maintenance).'); }
+    throw e;
+  }
+  return c;
+}
+function evict() {
+  const max = config.poolMax;
+  for (const [k, c] of pool) { if (pool.size <= max) break; if (c.depth === 0) { pool.delete(k); c.closed = true; try { c.db.close(); } catch { /* ignore */ } } }
+}
+export function conn() {
+  const key = tenantKey(); let c = pool.get(key);
+  if (c && !c.closed) { pool.delete(key); pool.set(key, c); c.lastUsed = Date.now(); return c; }   // refresh LRU position
+  c = openConn(key); evict(); return c;
+}
+export function closeTenant(key) { const c = pool.get(key); if (c) { pool.delete(key); c.closed = true; try { c.db.close(); } catch { /* ignore */ } } }
+export function closeAllTenants() { for (const k of [...pool.keys()]) closeTenant(k); }
+export const poolStats = () => ({ open: pool.size, max: config.poolMax, failed: [...failed.keys()] });
+export const clearTenantFailure = (key) => failed.delete(key);
+/** Close idle connections (not used for idleMs). */
+export function closeIdle(idleMs = 5 * 60_000) { const now = Date.now(); for (const [k, c] of pool) if (c.depth === 0 && now - c.lastUsed > idleMs) closeTenant(k); }
+
+/** `db` behaves like the current tenant's DatabaseSync (used by backup code and tests). */
+export const db = new Proxy({}, { get: (_, k) => { const d = conn().db; const v = d[k]; return typeof v === 'function' ? v.bind(d) : v; } });
 
 // rows come back as null-prototype objects: fine for property access, JSON and spreading; copying 40k rows per query is not
-export const all = (sql, ...p) => db.prepare(sql).all(...p);
-export const get = (sql, ...p) => { const r = db.prepare(sql).get(...p); return r ? { ...r } : undefined; };
-export const run = (sql, ...p) => db.prepare(sql).run(...p);
+export const all = (sql, ...p) => conn().db.prepare(sql).all(...p);
+export const get = (sql, ...p) => { const r = conn().db.prepare(sql).get(...p); return r ? { ...r } : undefined; };
+export const run = (sql, ...p) => conn().db.prepare(sql).run(...p);
 
-let depth = 0;
-/** Run fn atomically. Nested calls use savepoints. */
+/** Run fn atomically. Nested calls use savepoints. Synchronous by design: nothing can interleave inside a transaction. */
 export function tx(fn) {
-  if (depth > 0) {
-    const sp = 'sp' + depth;
-    db.exec(`SAVEPOINT ${sp}`); depth++;
-    try { const r = fn(); db.exec(`RELEASE ${sp}`); return r; }
-    catch (e) { db.exec(`ROLLBACK TO ${sp}`); db.exec(`RELEASE ${sp}`); throw e; }
-    finally { depth--; }
+  const c = conn(); const d = c.db;
+  if (c.depth > 0) {
+    const sp = 'sp' + c.depth;
+    d.exec(`SAVEPOINT ${sp}`); c.depth++;
+    try { const r = fn(); d.exec(`RELEASE ${sp}`); return r; }
+    catch (e) { d.exec(`ROLLBACK TO ${sp}`); d.exec(`RELEASE ${sp}`); throw e; }
+    finally { c.depth--; }
   }
-  db.exec('BEGIN IMMEDIATE'); depth++;
-  try { const r = fn(); db.exec('COMMIT'); return r; }
-  catch (e) { try { db.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
-  finally { depth--; }
+  d.exec('BEGIN IMMEDIATE'); c.depth++;
+  try { const r = fn(); d.exec('COMMIT'); return r; }
+  catch (e) { try { d.exec('ROLLBACK'); } catch { /* already rolled back */ } throw e; }
+  finally { c.depth--; }
 }
 
 const MIGRATIONS = [
@@ -277,15 +342,29 @@ SELECT v.*,
   CAST(ROUND((v.amount_due - v.paid) * 1.0 / v.fx_rate) AS INTEGER) AS balance_base
 FROM v_orders v;
 `,
+// 3: SaaS: support sessions, per-user language, customer timeline events, usage counters
+`
+CREATE TABLE session_flags (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, impersonator TEXT, readonly INTEGER NOT NULL DEFAULT 0);
+ALTER TABLE users ADD COLUMN language TEXT;
+CREATE TABLE customer_events (
+  id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, detail TEXT, user_id INTEGER, created_at TEXT NOT NULL
+);
+CREATE INDEX idx_cevents ON customer_events(customer_id, id);
+CREATE TABLE usage_counters (period TEXT NOT NULL, metric TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, metric));
+`,
 ];
 
-db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
-const applied = new Set(all('SELECT version FROM schema_migrations').map((r) => r.version));
-MIGRATIONS.forEach((sql, i) => {
-  const v = i + 1;
-  if (applied.has(v)) return;
-  tx(() => { db.exec(sql); run('INSERT INTO schema_migrations VALUES (?,?)', v, nowIso()); });
-});
+export const SCHEMA_VERSION = MIGRATIONS.length;
+/** Apply pending migrations to one connection. A failure aborts that tenant only. */
+export function migrate(c) {
+  c.db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+  const applied = new Set(c.db.prepare('SELECT version FROM schema_migrations').all().map((r) => r.version));
+  MIGRATIONS.forEach((sql, i) => {
+    const v = i + 1; if (applied.has(v)) return;
+    tx(() => { c.db.exec(sql); c.db.prepare('INSERT INTO schema_migrations VALUES (?,?)').run(v, nowIso()); });
+  });
+}
 
 // ---------------- settings ----------------
 export const DEFAULT_SETTINGS = {
@@ -308,15 +387,18 @@ export const DEFAULT_SETTINGS = {
   wa_optin_keywords: ['START', 'SUBSCRIBE'],
   notification_recipients: [], owner_email: '', owner_whatsapp: '', owner_alert_template: '',
   email_digest_hour: 8, wa_last_test: null, is_demo: false,
+  language: 'en', country: 'LB', business_type: '', integrations_enc: '', onboarding: {}, wa_number_state: { mode: 'byo', is_on_biz_app: false, coexistence: 'none' },
+  ai_enabled: true, weekly_digest: true, usage_warned: {},
   notification_rules: {},
 };
-let cache = null;
 export function allSettings() {
-  if (!cache) {
-    cache = { ...DEFAULT_SETTINGS };
+  const c = conn();
+  if (!c.cache) {
+    const cache = { ...DEFAULT_SETTINGS };
     for (const r of all('SELECT key, value FROM business_settings')) cache[r.key] = safeJson(r.value, DEFAULT_SETTINGS[r.key]);
+    c.cache = cache;
   }
-  return cache;
+  return c.cache;
 }
 export const setting = (k) => allSettings()[k];
 export function setSettings(obj) {
@@ -326,7 +408,7 @@ export function setSettings(obj) {
       run('INSERT INTO business_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, JSON.stringify(v));
     }
   });
-  cache = null;
+  conn().cache = null;
 }
 
 export function nextCounter(name) {
@@ -360,3 +442,6 @@ export const RECOGNIZED = {
 export function recognizedStatuses() { return RECOGNIZED[setting('revenue_recognition')] || RECOGNIZED.delivered; }
 export const recognizedSql = (alias = 'o') => `${alias}.status IN (${recognizedStatuses().map((s) => `'${s}'`).join(',')})`;
 export const recDateSql = (alias = 'o') => (setting('revenue_recognition') === 'confirmed' ? `${alias}.order_date` : `COALESCE(${alias}.delivery_date, ${alias}.order_date)`);
+
+/** Per-tenant attachment directory. */
+export const uploadsDir = () => (config.saas ? path.join(config.tenantsDir, tenantKey() + '-files') : config.uploadsDir);

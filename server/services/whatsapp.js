@@ -58,10 +58,24 @@ const DEFAULT_TEMPLATES = [
   ['Personalized recommendation', 'MARKETING', 'recommendation', 'Hello {customer_name}, since you enjoyed {product_name}, we think you will like our latest items at {business_name}. Reply to see more.'],
   ['Loyalty offer', 'MARKETING', 'loyalty', 'Hello {customer_name}, as one of our valued customers at {business_name}, enjoy {discount} off {product_name} until {offer_expiry}. Thank you for your loyalty!'],
 ];
-export function ensureDefaultTemplates() {
+const AR_TEMPLATES = [
+  ['منتج جديد', 'MARKETING', 'new_product', 'مرحبًا {customer_name}، لقد أضفنا {product_name} حديثًا في {business_name}. أرسل لنا رسالة لتطلب نسختك الآن.'],
+  ['عرض وخصم', 'MARKETING', 'promotion', 'مرحبًا {customer_name}، استمتع بخصم {discount} على {product_name} من {business_name}. ينتهي العرض في {offer_expiry}، فأرسل رسالة لتطلب الآن.'],
+  ['عرض خاص', 'MARKETING', 'special_offer', 'مرحبًا {customer_name}، عرض خاص من {business_name}: {discount} على {product_name} حتى {offer_expiry}. أرسل رسالة للاستفادة منه.'],
+  ['عرض موسمي', 'MARKETING', 'seasonal', 'مرحبًا {customer_name}، لدى {business_name} عروض موسمية على {product_name} بخصم {discount} حتى {offer_expiry}. أرسل رسالة لمعرفة المزيد.'],
+  ['استرجاع عميل', 'MARKETING', 'reactivation', 'مرحبًا {customer_name}، اشتقنا إليك في {business_name}! كان آخر طلب لك بتاريخ {last_purchase}. استمتع بخصم {discount} على طلبك القادم حتى {offer_expiry}. أرسل رسالة لتطلب.'],
+  ['شكر', 'UTILITY', 'thank_you', 'شكرًا لك {customer_name} على طلبك {order_number} من {business_name}. نقدّر ثقتك بنا.'],
+  ['تأكيد الطلب', 'UTILITY', 'order_confirmation', 'مرحبًا {customer_name}، تم تأكيد طلبك {order_number} لدى {business_name}. سنوافيك بكل جديد.'],
+  ['تحديث التوصيل', 'UTILITY', 'delivery_update', 'مرحبًا {customer_name}، طلبك {order_number} من {business_name} في الطريق إليك الآن.'],
+  ['تذكير بالدفع', 'UTILITY', 'payment_reminder', 'مرحبًا {customer_name}، تذكير ودّي من {business_name} بأن الطلب {order_number} ما زال عليه رصيد غير مدفوع. يرجى التواصل معنا لترتيب الدفع.'],
+  ['توصية مخصصة', 'MARKETING', 'recommendation', 'مرحبًا {customer_name}، بما أنك أحببت {product_name}، نعتقد أن أحدث منتجاتنا في {business_name} ستعجبك. أرسل رسالة لتراها.'],
+  ['عرض ولاء', 'MARKETING', 'loyalty', 'مرحبًا {customer_name}، كعميل مميز لدى {business_name}، استمتع بخصم {discount} على {product_name} حتى {offer_expiry}. شكرًا لوفائك!'],
+];
+export function ensureDefaultTemplates(lang = 'en') {
   if (get('SELECT COUNT(*) c FROM whatsapp_templates').c) return;
-  for (const [name, category, purpose, body] of DEFAULT_TEMPLATES) {
-    run('INSERT INTO whatsapp_templates(name,wa_name,category,purpose,language,body,meta_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)', name, slug(name), category, purpose, 'en', body, 'LOCAL_DRAFT', nowIso(), nowIso());
+  const list = lang === 'ar' ? AR_TEMPLATES : DEFAULT_TEMPLATES; const code = lang === 'ar' ? 'ar' : 'en';
+  for (const [name, category, purpose, body] of list) {
+    run('INSERT INTO whatsapp_templates(name,wa_name,category,purpose,language,body,meta_status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)', name, slug(name) || `${purpose}_${code}`, category, purpose, code, body, 'LOCAL_DRAFT', nowIso(), nowIso());
   }
 }
 function templateWarnings(body) {
