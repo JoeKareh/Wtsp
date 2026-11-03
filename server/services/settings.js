@@ -63,8 +63,9 @@ GET('/api/bootstrap', {}, (ctx) => {
     today: todayStr(s.timezone),
   };
 });
+const publicSettings = () => { const { integrations_enc: _x, ...rest } = allSettings(); return rest; };   // secrets never leave the server
 GET('/api/settings', { perm: 'settings:write' }, () => ({
-  settings: allSettings(), defaults: DEFAULT_SETTINGS, notification_rules: allRules(),
+  settings: publicSettings(), defaults: Object.fromEntries(Object.entries(DEFAULT_SETTINGS).filter(([k]) => k !== 'integrations_enc')), notification_rules: allRules(),
   integrations: { whatsapp: waStatus(), email: outboxStats(), ai: { enabled: Boolean(config.ai().key), model: config.ai().model }, base_url: config.baseUrl },
   has_data: hasData(),
 }));
@@ -83,7 +84,7 @@ PUT('/api/settings', { perm: 'settings:write' }, (ctx) => {
   if ((patch.inactive_days ?? cur.inactive_days) <= (patch.at_risk_days ?? cur.at_risk_days)) throw bad('"Inactive after" days must be greater than "at risk after" days');
   for (const c of currencies) if (c !== base && !get('SELECT 1 x FROM exchange_rates WHERE currency=?', c) && patch.currencies) throw bad(`Add an exchange rate for ${c} first (Settings → Exchange rates), then enable it`);
   tx(() => { setSettings(patch); audit(ctx.user, 'update', 'settings', null, Object.fromEntries(Object.keys(patch).filter((k) => k !== 'logo').map((k) => [k, cur[k]])), Object.fromEntries(Object.entries(patch).filter(([k]) => k !== 'logo'))); });
-  return { settings: allSettings(), notification_rules: allRules() };
+  return { settings: publicSettings(), notification_rules: allRules() };
 });
 
 GET('/api/exchange-rates', { perm: ['settings:write', 'payments:read', 'finance:read'] }, () => ({ base: allSettings().base_currency, rows: all('SELECT * FROM exchange_rates ORDER BY effective_date DESC, id DESC LIMIT 200') }));

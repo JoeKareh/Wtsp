@@ -167,9 +167,9 @@ async function process_(req, res, h, rid) {
     }
     if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') {
       const buf = await readBody(req);
-      if (matched.opts.raw) ctx.rawBody = buf;
-      if (buf.length) {
-        if (!matched.opts.raw || (req.headers['content-type'] || '').includes('json')) {
+      if (matched.opts.raw) ctx.rawBody = buf;      // raw routes (webhooks): never parsed here. The handler must verify the signature BEFORE parsing.
+      if (buf.length && !matched.opts.raw) {
+        {
           let parsed;
           try { parsed = JSON.parse(buf.toString('utf8')); } catch { throw new HttpError(400, 'Invalid JSON body'); }
           if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new HttpError(400, 'The request body must be a JSON object');

@@ -30,7 +30,7 @@ export const tenantKey = () => {
   return DEFAULT_KEY;
 };
 export const currentTenantContext = () => als.getStore() || null;
-export const withTenant = (tenantId, fn) => als.run({ ...(als.getStore() || {}), tenantId }, fn);
+export const withTenant = (tenantId, fn, tenant) => als.run({ ...(als.getStore() || {}), tenantId, ...(tenant ? { tenant } : {}) }, fn);
 export function tenantFile(id) {
   if (id === DEFAULT_KEY && !config.saas) return config.dbPath;
   if (!/^t_[a-f0-9]{16}$/.test(id)) throw new Error('Invalid tenant id');   // ids are generated, never user-supplied: no path tricks

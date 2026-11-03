@@ -38,7 +38,7 @@ export async function forEachTenant(name, fn, { onError, budgetMs = Number(proce
     if (Date.now() - began > budgetMs && done > 0) { cursors.set(name, (start + i) % list.length); return done; }
     const t = list[(start + i) % list.length];
     await capped(async () => {
-      try { await withTenant(t.id, () => fn(t)); }
+      try { await withTenant(t.id, () => fn(t), t); }
       catch (e) { if (onError) onError(t, e); else { log.error(`job ${name} failed for ${t.id}`, e); alertOperator('job:' + name, `Job "${name}" failed for tenant ${t.id}`, e.stack || e.message); } }
     });
     done++; await yieldLoop();

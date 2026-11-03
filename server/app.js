@@ -13,6 +13,7 @@ import './services/whatsapp.js';
 import './services/recommendations.js';
 import './services/reports.js';
 import './services/settings.js';
+import './services/clicktochat.js';
 import './platform.js';
 import './admin.js';
 import { config } from './config.js';

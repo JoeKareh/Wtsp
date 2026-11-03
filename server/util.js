@@ -107,6 +107,7 @@ export function compareRange(r, mode = 'prev') {
 }
 
 // ---------- phones ----------
+const TRUNK_ZERO_CC = ['961', '962', '963', '964', '965', '966', '968', '971', '972', '973', '974', '20', '212', '213', '216', '90', '44', '33', '49', '91', '92', '234', '27', '61', '55', '52'];   // countries that write a leading 0 locally which must be dropped internationally (not Italy: its 0 is part of the number)
 export function normPhone(raw, cc = '') {
   let s = String(raw ?? '').trim();
   if (!s) return '';
@@ -119,6 +120,7 @@ export function normPhone(raw, cc = '') {
     else s = '+' + s.replace(/^0+/, '');
   }
   s = '+' + s.slice(1).replace(/\D/g, '');
+  { const d = s.slice(1); const code = TRUNK_ZERO_CC.find((c) => d.startsWith(c) && d[c.length] === '0'); if (code) s = '+' + code + d.slice(code.length + 1); }
   if (!/^\+\d{8,15}$/.test(s)) throw bad(`"${raw}" is not a valid phone number. Use international format, e.g. +96171123456`);
   return s;
 }

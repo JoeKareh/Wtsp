@@ -161,8 +161,9 @@ function profile(id) {
   const candidates = [c.last_purchase, payments[0]?.paid_at, messages[0]?.created_at?.slice(0, 10)].filter(Boolean).sort();
   const credit = all(`SELECT p.currency, SUM(CASE p.type WHEN 'payment' THEN 1 ELSE -1 END * (p.amount - COALESCE((SELECT SUM(amount) FROM payment_allocations WHERE payment_id=p.id),0))) AS amount
       FROM payments p WHERE p.customer_id=? AND p.voided=0 GROUP BY p.currency HAVING amount>0`, id);
+  const events = all('SELECT e.id, e.type, e.detail, e.created_at, u.name AS user_name FROM customer_events e LEFT JOIN users u ON u.id=e.user_id WHERE e.customer_id=? ORDER BY e.id DESC LIMIT 50', id);
   return {
-    customer: c, orders, payments, products, messages, consent, credit,
+    customer: c, orders, payments, products, messages, consent, credit, events,
     frequency: { purchase_dates: dates.length, avg_days_between_orders: avgInterval },
     last_interaction: candidates.length ? candidates[candidates.length - 1] : null,
     whatsapp_window_open: lastInbound ? Date.now() - Date.parse(lastInbound) < 24 * 3600e3 : false,

@@ -2,32 +2,58 @@
 import crypto from 'node:crypto';
 import { GET, POST, PUT, DELETE, route, reply, raw } from '../http.js';
 import { all, get, run, tx, audit, allSettings, setSettings } from '../db.js';
-import { bad, notFound, conflict, str, oneOf, nowIso, todayStr, addDays, diffDays, phoneDigits, safeJson, normPhone, uuid } from '../util.js';
+import { HttpError, bad, notFound, conflict, str, oneOf, nowIso, todayStr, addDays, diffDays, phoneDigits, safeJson, normPhone, uuid } from '../util.js';
 import { config } from '../config.js';
-import { customerSelect, recordConsent, getCustomer } from './customers.js';
+import { getSecrets, setSecrets, verifyToken, maskSecrets } from '../secrets.js';
+import { safeEqual } from '../crypto.js';
+import { cGet, cRun } from '../control.js';
+import { currentTenantContext, withTenant } from '../db.js';
+import { allow } from '../ratelimit.js';
+import { alertOperator } from '../platformmail.js';
+import { customerSelect, recordConsent, getCustomer, createCustomer } from './customers.js';
 import { notify, setOwnerWhatsAppSender } from './notifications.js';
 import { on } from '../events.js';
 import { log } from '../log.js';
 
-export const PLACEHOLDERS = ['customer_name', 'order_number', 'product_name', 'last_purchase', 'discount', 'offer_expiry', 'business_name'];
-const SAMPLE = { customer_name: 'Sara', order_number: 'ORD-000123', product_name: 'Olive oil 1L', last_purchase: '2025-01-15', discount: '10%', offer_expiry: '2025-12-31' };
+export const PLACEHOLDERS = ['customer_name', 'order_number', 'product_name', 'last_purchase', 'discount', 'offer_expiry', 'business_name', 'balance'];
+const SAMPLE = { balance: '25.00 USD', customer_name: 'Sara', order_number: 'ORD-000123', product_name: 'Olive oil 1L', last_purchase: '2025-01-15', discount: '10%', offer_expiry: '2025-12-31' };
 
 // ---------------- configuration & Graph API client ----------------
+/** Credentials for the CURRENT tenant. Single-business mode keeps using the environment variables, exactly as before. */
+function waCfg() {
+  const env = config.wa();
+  if (!config.saas) return env;
+  const s = getSecrets();
+  return { token: s.wa_token || '', phoneNumberId: s.wa_phone_number_id || '', wabaId: s.wa_waba_id || '', appSecret: s.wa_app_secret || '', verifyToken: s.wa_verify_token || '', version: env.version, apiBase: env.apiBase };
+}
+const tenantWebhookUrl = () => { const t = currentTenantContext()?.tenant; return t?.webhook_key ? config.platformUrl('/webhooks/whatsapp/' + t.webhook_key) : `${config.baseUrl}/webhooks/whatsapp`; };
+/**
+ * Adapter seam. Today: mode "byo" (the business creates its own Meta app / WABA and pastes its credentials; its webhook URL is tenant-specific).
+ * Future: mode "tech_provider" (one platform Meta app with Embedded Signup, one callback URL for all tenants, routed by phone_number_id/waba_id AFTER
+ * the platform-secret HMAC check). Not implemented: it needs Meta Tech Provider approval (see docs/WHATSAPP_SAAS.md).
+ */
+export const WA_MODES = { byo: { implemented: true }, tech_provider: { implemented: false } };
+const numberState = () => allSettings().wa_number_state || { mode: 'byo', is_on_biz_app: false, coexistence: 'none' };
+/** Cloud API sends are blocked for a number that is also used in the WhatsApp Business app until coexistence onboarding is active. */
+function assertCanSend() {
+  const st = numberState();
+  if (st.is_on_biz_app && st.coexistence !== 'active') throw bad('This number is also used in the WhatsApp Business app, and its coexistence link is not active yet, so WhatsApp blocks sending through the API. Use a dedicated number for the API, or finish coexistence onboarding.');
+}
 export function waStatus() {
-  const c = config.wa(); const st = allSettings();
-  const required = { WHATSAPP_TOKEN: c.token, WHATSAPP_PHONE_NUMBER_ID: c.phoneNumberId, WHATSAPP_BUSINESS_ACCOUNT_ID: c.wabaId, WHATSAPP_APP_SECRET: c.appSecret, WHATSAPP_VERIFY_TOKEN: c.verifyToken };
+  const c = waCfg(); const st = allSettings();
+  const required = config.saas ? { 'Access token': c.token, 'Phone number ID': c.phoneNumberId, 'Business account ID': c.wabaId, 'App secret': c.appSecret } : { WHATSAPP_TOKEN: c.token, WHATSAPP_PHONE_NUMBER_ID: c.phoneNumberId, WHATSAPP_BUSINESS_ACCOUNT_ID: c.wabaId, WHATSAPP_APP_SECRET: c.appSecret, WHATSAPP_VERIFY_TOKEN: c.verifyToken };
   const missing = Object.entries(required).filter(([, v]) => !v).map(([k]) => k);
-  const sendReady = Boolean(c.token && c.phoneNumberId);
+  const sendReady = Boolean(c.token && c.phoneNumberId); const ns = numberState();
   const last = st.wa_last_test;
   return {
     configured: sendReady, missing, can_send: sendReady, can_manage_templates: Boolean(c.token && c.wabaId),
-    webhook_ready: Boolean(c.appSecret && c.verifyToken), webhook_url: `${config.baseUrl}/webhooks/whatsapp`, api_version: c.version,
+    webhook_ready: Boolean(c.appSecret && (c.verifyToken || config.saas)), webhook_url: tenantWebhookUrl(), mode: ns.mode, is_on_biz_app: !!ns.is_on_biz_app, coexistence: ns.coexistence, embedded_signup_available: WA_MODES.tech_provider.implemented, api_version: c.version,
     connection: !sendReady ? 'not_configured' : last?.ok ? 'connected' : last ? 'failed' : 'untested',
     last_test: last || null,
   };
 }
 async function graph(method, pathPart, body) {
-  const c = config.wa();
+  const c = waCfg();
   if (!c.token) throw bad('WhatsApp is not configured. Set WHATSAPP_TOKEN in the server environment (see docs/WHATSAPP_SETUP.md).');
   const url = `${c.apiBase}/${c.version}/${pathPart}`;
   let res;
@@ -54,7 +80,7 @@ const DEFAULT_TEMPLATES = [
   ['Thank you', 'UTILITY', 'thank_you', 'Thank you {customer_name} for your order {order_number} at {business_name}. We appreciate your trust.'],
   ['Order confirmation', 'UTILITY', 'order_confirmation', 'Hello {customer_name}, your order {order_number} at {business_name} has been confirmed. We will keep you updated.'],
   ['Delivery update', 'UTILITY', 'delivery_update', 'Hello {customer_name}, your order {order_number} from {business_name} is out for delivery.'],
-  ['Payment reminder', 'UTILITY', 'payment_reminder', 'Hello {customer_name}, this is a friendly reminder from {business_name} that order {order_number} still has an unpaid balance. Please contact us to arrange payment.'],
+  ['Payment reminder', 'UTILITY', 'payment_reminder', 'Hello {customer_name}, this is a friendly reminder from {business_name} that order {order_number} still has an unpaid balance of {balance}. Please contact us to arrange payment.'],
   ['Personalized recommendation', 'MARKETING', 'recommendation', 'Hello {customer_name}, since you enjoyed {product_name}, we think you will like our latest items at {business_name}. Reply to see more.'],
   ['Loyalty offer', 'MARKETING', 'loyalty', 'Hello {customer_name}, as one of our valued customers at {business_name}, enjoy {discount} off {product_name} until {offer_expiry}. Thank you for your loyalty!'],
 ];
@@ -67,7 +93,7 @@ const AR_TEMPLATES = [
   ['شكر', 'UTILITY', 'thank_you', 'شكرًا لك {customer_name} على طلبك {order_number} من {business_name}. نقدّر ثقتك بنا.'],
   ['تأكيد الطلب', 'UTILITY', 'order_confirmation', 'مرحبًا {customer_name}، تم تأكيد طلبك {order_number} لدى {business_name}. سنوافيك بكل جديد.'],
   ['تحديث التوصيل', 'UTILITY', 'delivery_update', 'مرحبًا {customer_name}، طلبك {order_number} من {business_name} في الطريق إليك الآن.'],
-  ['تذكير بالدفع', 'UTILITY', 'payment_reminder', 'مرحبًا {customer_name}، تذكير ودّي من {business_name} بأن الطلب {order_number} ما زال عليه رصيد غير مدفوع. يرجى التواصل معنا لترتيب الدفع.'],
+  ['تذكير بالدفع', 'UTILITY', 'payment_reminder', 'مرحبًا {customer_name}، تذكير ودّي من {business_name} بأن الطلب {order_number} ما زال عليه رصيد غير مدفوع بقيمة {balance}. يرجى التواصل معنا لترتيب الدفع.'],
   ['توصية مخصصة', 'MARKETING', 'recommendation', 'مرحبًا {customer_name}، بما أنك أحببت {product_name}، نعتقد أن أحدث منتجاتنا في {business_name} ستعجبك. أرسل رسالة لتراها.'],
   ['عرض ولاء', 'MARKETING', 'loyalty', 'مرحبًا {customer_name}، كعميل مميز لدى {business_name}، استمتع بخصم {discount} على {product_name} حتى {offer_expiry}. شكرًا لوفائك!'],
 ];
@@ -158,6 +184,10 @@ export function evalSegment(def, category = 'MARKETING') {
 }
 
 // ---------------- variables & rendering ----------------
+function balanceText(customerId, orderId) {
+  const o = orderId ? get('SELECT balance, currency FROM v_orders_fin WHERE id=?', orderId) : get('SELECT balance, currency FROM v_orders_fin WHERE customer_id=? AND balance>0 ORDER BY id DESC LIMIT 1', customerId);
+  return o && o.balance > 0 ? `${(o.balance / 100).toLocaleString('en-US', { minimumFractionDigits: o.currency === 'LBP' ? 0 : 2, maximumFractionDigits: o.currency === 'LBP' ? 0 : 2 })} ${o.currency}` : '';
+}
 function varsFor(c, params = {}, orderId = null) {
   const s = allSettings();
   const ord = orderId ? get('SELECT number FROM orders WHERE id=? AND customer_id=?', orderId, c.id)
@@ -165,7 +195,7 @@ function varsFor(c, params = {}, orderId = null) {
   const lastProd = get(`SELECT COALESCE(p.name,i.description) n FROM order_items i JOIN orders o ON o.id=i.order_id LEFT JOIN products p ON p.id=i.product_id WHERE o.customer_id=? AND o.status NOT IN ('Draft','Cancelled','Returned') ORDER BY o.order_date DESC, i.id DESC LIMIT 1`, c.id);
   return {
     customer_name: c.name, order_number: ord?.number || '', product_name: params.product_name || lastProd?.n || '',
-    last_purchase: c.last_purchase || '', discount: params.discount || '', offer_expiry: params.offer_expiry || '', business_name: s.business_name,
+    last_purchase: c.last_purchase || '', balance: balanceText(c.id, orderId), discount: params.discount || '', offer_expiry: params.offer_expiry || '', business_name: s.business_name,
   };
 }
 function buildMessage(tpl, customer, params, orderId) {
@@ -175,7 +205,8 @@ function buildMessage(tpl, customer, params, orderId) {
 }
 
 async function sendTemplateMessage(phone, tpl, values) {
-  const c = config.wa();
+  assertCanSend();
+  const c = waCfg();
   const payload = { messaging_product: 'whatsapp', to: phoneDigits(phone), type: 'template', template: { name: tpl.wa_name, language: { code: tpl.language } } };
   if (values.length) payload.template.components = [{ type: 'body', parameters: values.map((v) => ({ type: 'text', text: v })) }];
   const r = await graph('POST', `${c.phoneNumberId}/messages`, payload);
@@ -283,7 +314,7 @@ on('order.created', (o) => {
 
 // ---------------- webhook ----------------
 function verifySignature(raw_, sig) {
-  const secret = config.wa().appSecret; if (!secret || !sig) return false;
+  const secret = waCfg().appSecret; if (!secret || !sig) return false;
   const exp = 'sha256=' + crypto.createHmac('sha256', secret).update(raw_).digest('hex');
   return exp.length === sig.length && crypto.timingSafeEqual(Buffer.from(exp), Buffer.from(sig));
 }
@@ -304,7 +335,7 @@ async function handleInbound(m) {
   if (cust && st.wa_optout_keywords.map((k) => k.toUpperCase()).includes(word)) {
     recordConsent(cust.id, 'opted_out', 'Customer replied "' + text.trim().slice(0, 30) + '" on WhatsApp', m.id || null, null);
     notify({ type: 'unusual_transaction', severity: 'info', title: `${cust.name} opted out of WhatsApp messages`, body: 'Added to the suppression list. No further promotional messages will be sent.', link: `#/customers?open=${cust.id}`, entity_type: 'customer', entity_id: cust.id });
-    graph('POST', `${config.wa().phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: phoneDigits(m.from), type: 'text', text: { body: `You have been unsubscribed from ${st.business_name} messages. Reply START to subscribe again.` } }).catch(() => {});
+    graph('POST', `${waCfg().phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: phoneDigits(m.from), type: 'text', text: { body: `You have been unsubscribed from ${st.business_name} messages. Reply START to subscribe again.` } }).catch(() => {});
   } else if (cust && st.wa_optin_keywords.map((k) => k.toUpperCase()).includes(word)) {
     recordConsent(cust.id, 'opted_in', 'Customer replied "' + text.trim().slice(0, 30) + '" on WhatsApp', m.id || null, null);
   }
@@ -321,28 +352,97 @@ function handleStatus(s) {
   if (s.status === 'read') sets.push('sent_at=COALESCE(sent_at,?)', 'delivered_at=COALESCE(delivered_at,?)', 'read_at=COALESCE(read_at,?)'), p.push(ts, ts, ts);
   if (sets.length) run(`UPDATE whatsapp_messages SET ${sets.join(',')} WHERE id=?`, ...p, row.id);
 }
-route('GET', '/webhooks/whatsapp', { perm: 'public' }, (ctx) => {
-  const c = config.wa();
-  if (ctx.query['hub.mode'] === 'subscribe' && c.verifyToken && ctx.query['hub.verify_token'] === c.verifyToken) return raw(String(ctx.query['hub.challenge'] || ''), 'text/plain');
-  return reply(403, { error: 'Verification failed' });
-});
-route('POST', '/webhooks/whatsapp', { perm: 'public', raw: true }, async (ctx) => {
-  if (!config.wa().appSecret) return reply(503, { error: 'WHATSAPP_APP_SECRET is not set, so webhook signatures cannot be verified' });
-  if (!verifySignature(ctx.rawBody, ctx.req.headers['x-hub-signature-256'])) return reply(401, { error: 'Invalid signature' });
+// ---- coexistence events (number also used in the WhatsApp Business app). Payload shapes follow third-party documentation and are UNVERIFIED
+// against Meta's own docs: handlers are deliberately tolerant. They only ever store data and flip the number state. ----
+function markCoexistenceActive() { const ns = numberState(); if (ns.coexistence !== 'active') setSettings({ wa_number_state: { ...ns, is_on_biz_app: true, coexistence: 'active' } }); }
+function handleEchoes(v) {
+  for (const m of v.message_echoes || []) {
+    if (m.id && get('SELECT 1 x FROM whatsapp_messages WHERE wamid=?', m.id)) continue;
+    const to = '+' + phoneDigits(m.to || ''); const cust = customerByPhone(to);
+    run("INSERT INTO whatsapp_messages(customer_id,phone,direction,kind,body,wamid,status,created_at,sent_at) VALUES (?,?,'out','echo',?,?,'sent',?,?)", cust?.id ?? null, to, String(m.text?.body || `[${m.type || 'message'}]`).slice(0, 1000), m.id ?? null, nowIso(), nowIso());
+  }
+  markCoexistenceActive();
+}
+function handleHistory(v) {
+  for (const h of v.history || []) for (const th of h.threads || []) for (const m of th.messages || []) {
+    if (m.id && get('SELECT 1 x FROM whatsapp_messages WHERE wamid=?', m.id)) continue;
+    const other = '+' + phoneDigits(m.from || th.id || ''); const cust = customerByPhone(other); const dir = cust ? 'in' : 'out';
+    run("INSERT INTO whatsapp_messages(customer_id,phone,direction,kind,body,wamid,status,created_at) VALUES (?,?,?,'history',?,?,?,?)", cust?.id ?? null, other, dir, String(m.text?.body || `[${m.type || 'message'}]`).slice(0, 1000), m.id ?? null, dir === 'in' ? 'received' : 'sent', m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : nowIso());
+  }
+  markCoexistenceActive();
+}
+function handleStateSync(v) {
+  for (const c of v.state_sync || []) {
+    if (c.type !== 'contact' || c.action !== 'add' || !c.contact?.phone_number) continue;
+    try { createCustomer({ name: c.contact.full_name || c.contact.first_name || c.contact.phone_number, phone: c.contact.phone_number, status: 'Potential' }, null); } catch { /* duplicate or invalid number: ignore */ }   // synced contacts carry NO marketing consent
+  }
+  markCoexistenceActive();
+}
+
+/** Shared by the single-business and per-tenant webhook routes. The signature is verified on the RAW bytes before anything is parsed. */
+async function processWebhook(ctx, tenantRow) {
+  const c = waCfg();
+  if (!c.appSecret) return reply(503, { error: 'The app secret is not configured, so webhook signatures cannot be verified' });
+  if (!verifySignature(ctx.rawBody, ctx.req.headers['x-hub-signature-256'])) { if (tenantRow) alertOperator('webhook:' + tenantRow.id, `WhatsApp webhook signature failures for tenant ${tenantRow.id}`, 'A request with an invalid signature was rejected (wrong app secret configured, or someone is probing the URL).'); return reply(401, { error: 'Invalid signature' }); }
   const body = safeJson(ctx.rawBody.toString('utf8'), {});
   for (const e of body.entry || []) for (const ch of e.changes || []) {
     const v = ch.value || {};
+    try {
+      if (ch.field === 'smb_message_echoes') handleEchoes(v); else if (ch.field === 'history') handleHistory(v); else if (ch.field === 'smb_app_state_sync') handleStateSync(v);
+    } catch (err) { log.warn('wa coexistence event', err.message); }
     for (const s of v.statuses || []) { try { handleStatus(s); } catch (err) { log.warn('wa status', err.message); } }
     for (const m of v.messages || []) { try { await handleInbound(m); } catch (err) { log.warn('wa inbound', err.message); } }
   }
   return { ok: true };
-});
+}
+const verifyHandshake = (ctx) => {
+  const c = waCfg();
+  if (ctx.query['hub.mode'] === 'subscribe' && c.verifyToken && safeEqual(ctx.query['hub.verify_token'] || '', c.verifyToken)) return raw(String(ctx.query['hub.challenge'] || ''), 'text/plain');
+  return reply(403, { error: 'Verification failed' });
+};
+if (!config.saas) {
+  route('GET', '/webhooks/whatsapp', { perm: 'public' }, verifyHandshake);
+  route('POST', '/webhooks/whatsapp', { perm: 'public', raw: true }, (ctx) => processWebhook(ctx, null));
+}
+// Per-tenant URL: https://<APP_DOMAIN>/webhooks/whatsapp/<random key>. The tenant comes from the URL only; its own app secret then verifies the signature.
+function tenantFromKey(ctx) {
+  if (!allow('whkey:' + ctx.ip, 120, 60_000)) throw new HttpError(429, 'Too many requests');
+  const key = String(ctx.params.key || ''); const t = /^[0-9a-f]{32}$/.test(key) ? cGet('SELECT * FROM tenants WHERE webhook_key=?', key) : null;
+  if (!t || t.purged_at || t.status === 'deleted') throw new HttpError(404, 'Not found');
+  return t;
+}
+route('GET', '/webhooks/whatsapp/:key', { perm: 'public', scope: 'platform' }, (ctx) => { const t = tenantFromKey(ctx); return withTenant(t.id, () => verifyHandshake(ctx), t); });
+route('POST', '/webhooks/whatsapp/:key', { perm: 'public', scope: 'platform', raw: true }, (ctx) => { const t = tenantFromKey(ctx); return withTenant(t.id, () => processWebhook(ctx, t), t); });
 
 // ---------------- API routes ----------------
 const R = { perm: 'marketing:read' }; const W = { perm: 'marketing:write' };
 GET('/api/whatsapp/status', R, () => waStatus());
+// ---- guided setup (SaaS): each business enters its own WhatsApp Cloud API credentials ----
+const SETUP = { perm: 'settings:write' };
+function markWaFlag(on) { const t = currentTenantContext()?.tenant; if (!t) return; const f = { ...safeJson(t.flags, {}), wa: on ? 1 : 0 }; cRun('UPDATE tenants SET flags=? WHERE id=?', JSON.stringify(f), t.id); t.flags = JSON.stringify(f); }
+GET('/api/whatsapp/setup', SETUP, () => ({ webhook_url: tenantWebhookUrl(), verify_token: config.saas ? verifyToken() : waCfg().verifyToken, credentials: maskSecrets(getSecrets()), state: numberState(), status: waStatus(), saas: config.saas }));
+PUT('/api/whatsapp/credentials', SETUP, (ctx) => {
+  if (!config.saas) throw bad('Credentials are configured through environment variables in single-business mode');
+  const b = ctx.body; const patch = {};
+  if (b.token !== undefined) patch.wa_token = b.token === null ? null : str(b.token, 'Access token', { max: 600 });
+  if (b.phone_number_id !== undefined) { const v = b.phone_number_id === null ? null : str(b.phone_number_id, 'Phone number ID', { max: 30 }); if (v && !/^\d{5,25}$/.test(v)) throw bad('The phone number ID is a number of 15 or so digits (find it in Meta → WhatsApp → API Setup)'); patch.wa_phone_number_id = v; }
+  if (b.waba_id !== undefined) { const v = b.waba_id === null ? null : str(b.waba_id, 'Business account ID', { max: 30 }); if (v && !/^\d{5,25}$/.test(v)) throw bad('The business account ID is a number'); patch.wa_waba_id = v; }
+  if (b.app_secret !== undefined) patch.wa_app_secret = b.app_secret === null ? null : str(b.app_secret, 'App secret', { max: 100 });
+  const s = setSecrets(patch); if (!s.wa_verify_token) verifyToken();
+  setSettings({ wa_last_test: null }); markWaFlag(Boolean(s.wa_token && s.wa_phone_number_id));
+  audit(ctx.user, 'update', 'whatsapp_credentials', null, null, { fields: Object.keys(patch) }); return { credentials: maskSecrets(getSecrets()), status: waStatus() };
+});
+DELETE('/api/whatsapp/credentials', SETUP, (ctx) => { setSecrets({ wa_token: null, wa_phone_number_id: null, wa_waba_id: null, wa_app_secret: null }); setSettings({ wa_last_test: null }); markWaFlag(false); audit(ctx.user, 'delete', 'whatsapp_credentials'); return { ok: true }; });
+PUT('/api/whatsapp/number-state', SETUP, (ctx) => { const ns = { ...numberState(), is_on_biz_app: !!ctx.body.is_on_biz_app }; if (!ns.is_on_biz_app) ns.coexistence = 'none'; else if (ns.coexistence === 'none') ns.coexistence = 'pending'; setSettings({ wa_number_state: ns }); audit(ctx.user, 'update', 'whatsapp_number_state', null, null, ns); return { state: ns, status: waStatus() }; });
+/** "Send me a test message": uses Meta's built-in hello_world template, which exists on every new WhatsApp Business account. */
+POST('/api/whatsapp/test-message', { perm: 'marketing:write' }, async (ctx) => {
+  const c = waCfg(); if (!c.token || !c.phoneNumberId) throw bad('Save your access token and phone number ID first');
+  assertCanSend(); const to = normPhone(str(ctx.body.to, 'Phone number', { required: true }), allSettings().default_country_code);
+  const r = await graph('POST', `${c.phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: phoneDigits(to), type: 'template', template: { name: 'hello_world', language: { code: 'en_US' } } });
+  return { ok: true, to, message_id: r.messages?.[0]?.id || null, note: 'If you do not receive it within a minute: the number must be added as a recipient in Meta (test numbers) or have messaged you in the last 24 hours.' };
+});
 POST('/api/whatsapp/test', W, async () => {
-  const c = config.wa();
+  const c = waCfg();
   if (!c.token || !c.phoneNumberId) throw bad('Set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID first (see docs/WHATSAPP_SETUP.md)');
   try {
     const r = await graph('GET', `${c.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`);
@@ -391,13 +491,13 @@ POST('/api/whatsapp/templates/:id/submit', W, async (ctx) => {
   const st = allSettings();
   const example = t.params.map((k) => (k === 'business_name' ? st.business_name : SAMPLE[k]));
   const comp = { type: 'BODY', text: t.meta_body }; if (example.length) comp.example = { body_text: [example] };
-  const r = await graph('POST', `${config.wa().wabaId}/message_templates`, { name: t.wa_name, language: t.language, category: t.category, components: [comp] });
+  const r = await graph('POST', `${waCfg().wabaId}/message_templates`, { name: t.wa_name, language: t.language, category: t.category, components: [comp] });
   run('UPDATE whatsapp_templates SET meta_id=?, meta_status=?, meta_reason=NULL, updated_at=? WHERE id=?', r.id ?? null, r.status || 'PENDING', nowIso(), t.id);
   audit(ctx.user, 'submit', 'wa_template', t.id, null, { status: r.status }); return getTemplate(t.id);
 });
 POST('/api/whatsapp/templates/sync', W, async () => {
   if (!waStatus().can_manage_templates) throw bad('Set WHATSAPP_TOKEN and WHATSAPP_BUSINESS_ACCOUNT_ID first');
-  const r = await graph('GET', `${config.wa().wabaId}/message_templates?fields=name,status,language,rejected_reason,id&limit=200`);
+  const r = await graph('GET', `${waCfg().wabaId}/message_templates?fields=name,status,language,rejected_reason,id&limit=200`);
   let updated = 0;
   for (const m of r.data || []) {
     const row = get('SELECT * FROM whatsapp_templates WHERE wa_name=? AND language=?', m.name, m.language);
@@ -509,7 +609,7 @@ POST('/api/whatsapp/send-text', W, async (ctx) => {
   if (!lastIn || Date.now() - Date.parse(lastIn) > 24 * 3600e3) throw bad('The 24-hour customer service window is closed. WhatsApp only allows approved templates until the customer messages you again.');
   const id = run("INSERT INTO whatsapp_messages(customer_id,phone,direction,kind,body,status,created_at) VALUES (?,?,'out','text',?,'queued',?)", c.id, c.whatsapp, text, nowIso()).lastInsertRowid;
   try {
-    const r = await graph('POST', `${config.wa().phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: phoneDigits(c.whatsapp), type: 'text', text: { body: text } });
+    const r = await graph('POST', `${waCfg().phoneNumberId}/messages`, { messaging_product: 'whatsapp', to: phoneDigits(c.whatsapp), type: 'text', text: { body: text } });
     run("UPDATE whatsapp_messages SET status='sent', wamid=?, sent_at=? WHERE id=?", r.messages?.[0]?.id ?? null, nowIso(), id);
   } catch (e) { run("UPDATE whatsapp_messages SET status='failed', error=? WHERE id=?", e.message.slice(0, 300), id); throw e; }
   return get('SELECT * FROM whatsapp_messages WHERE id=?', id);
