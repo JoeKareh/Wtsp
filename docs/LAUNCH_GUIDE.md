@@ -39,6 +39,8 @@ cp .env.example .env
 nano .env
 ```
 
+(The server only has Docker, not Node, so make the two keys with `openssl rand -hex 32`, which is already installed on Ubuntu. In the `nano` editor: arrow keys to move, paste with right-click, save with Ctrl+O then Enter, leave with Ctrl+X.)
+
 Fill in at least these lines of `.env`:
 
 ```ini
@@ -49,8 +51,8 @@ SUPPORT_EMAIL=you@yourdomain.com
 ALERT_EMAIL=you@yourdomain.com
 PLATFORM_NAME=YourBrand
 PLATFORM_LEGAL_NAME=Your Company Name
-APP_ENCRYPTION_KEY=<run: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))">
-BACKUP_ENCRYPTION_KEY=<another one, same command>
+APP_ENCRYPTION_KEY=<run `openssl rand -hex 32` in the server window and paste the 64 letters/numbers it prints>
+BACKUP_ENCRYPTION_KEY=<run the same command again to get a different one>
 PLATFORM_SMTP_HOST=...   PLATFORM_SMTP_PORT=587   PLATFORM_SMTP_USER=...   PLATFORM_SMTP_PASS=...   PLATFORM_SMTP_FROM="YourBrand <hello@yourdomain.com>"
 MANUAL_PAYMENT_INSTRUCTIONS=Pay to IBAN ... / Whish number ... / OMT ... and use your reference.
 ```
